@@ -1,0 +1,113 @@
+/* Shared tokens for all duckdb-analyst views. Values are the dataviz
+ * reference palette; the views read roles, not hex, so a rebrand is a swap
+ * here (and in theme.ts, which mirrors these for canvas-rendered marks). */
+:root {
+  color-scheme: light dark;
+  --surface: #fcfcfb;
+  --text-primary: #0b0b0b;
+  --text-secondary: #52514e;
+  --line: #ececea;
+  --accent: #2a78d6;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --surface: #1a1a19;
+    --text-primary: #ffffff;
+    --text-secondary: #c3c2b7;
+    --line: #383835;
+    --accent: #3987e5;
+  }
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+}
+body {
+  background: var(--surface);
+  color: var(--text-primary);
+  font: 13px/1.5 system-ui, -apple-system, sans-serif;
+}
+
+.view {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  box-sizing: border-box;
+}
+.view-note {
+  padding: 8px 12px;
+  color: var(--text-secondary);
+}
+
+/* table view */
+.table-scroll {
+  flex: 1;
+  overflow: auto;
+}
+table {
+  border-collapse: collapse;
+  width: 100%;
+}
+th,
+td {
+  padding: 5px 12px;
+  border-bottom: 1px solid var(--line);
+  text-align: left;
+  white-space: nowrap;
+  max-width: 32ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+th {
+  position: sticky;
+  top: 0;
+  background: var(--surface);
+  color: var(--text-secondary);
+  font-weight: 600;
+  box-shadow: 0 1px 0 var(--line);
+  border-bottom: none;
+}
+td.num,
+th.num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+td .null {
+  color: var(--text-secondary);
+}
+
+/* chart view */
+.chart-host {
+  flex: 1;
+  min-height: 0;
+  padding: 8px;
+}
+/* vega-embed's injected default style makes its container inline-block, which
+ * collapses `width: "container"` (autosize fit-x) specs to nothing. */
+.chart-host.vega-embed {
+  display: block;
+}
+
+/* map view */
+.map-host {
+  flex: 1;
+  min-height: 0;
+  background: var(--surface);
+}
+.leaflet-container {
+  background: var(--surface);
+  font: inherit;
+}
+.leaflet-popup-content {
+  font: 13px/1.5 system-ui, -apple-system, sans-serif;
+  margin: 10px 14px;
+}
+.popup-title {
+  font-weight: 600;
+}
+.popup-detail {
+  color: #52514e;
+}

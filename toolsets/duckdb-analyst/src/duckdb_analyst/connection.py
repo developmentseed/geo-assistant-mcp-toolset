@@ -95,13 +95,24 @@ model.
 """
 
 import asyncio
+import logging
 import os
 import threading
+import time
 from typing import Any, NotRequired, TypedDict
 
 import duckdb
 
 from duckdb_analyst.security import LOOKUP_TIMEOUT_SECONDS, QUERY_TIMEOUT_SECONDS
+
+logger = logging.getLogger(__name__)
+
+
+def _oneline(sql: str, max_length: int = 2000) -> str:
+    """Collapse SQL to one whitespace-normalized line for a log record."""
+    flat = " ".join(sql.split())
+    return flat if len(flat) <= max_length else flat[:max_length] + "…"
+
 
 # Official Natural Earth vector data, unzipped, served directly over plain
 # https by the project's own GitHub organization
@@ -171,12 +182,20 @@ class SourceInfo(TypedDict):
 
 
 def _build_connection() -> duckdb.DuckDBPyConnection:
+    started = time.perf_counter()
+    logger.info(
+        "building DuckDB connection (memory_limit=%s, threads=%d, overture_release=%s)",
+        _MEMORY_LIMIT,
+        _THREADS,
+        _OVERTURE_RELEASE,
+    )
     con = duckdb.connect(":memory:")
     con.execute(f"SET memory_limit = '{_MEMORY_LIMIT}'")
     con.execute(f"SET threads = {_THREADS}")
 
     # Core extensions only, and community extensions refused before the first
     # INSTALL — see the module docstring, layer "Extensions".
+    logger.debug("installing and loading extensions: httpfs, spatial")
     con.execute("SET allow_community_extensions = false")
     con.execute("INSTALL httpfs")
     con.execute("LOAD httpfs")
@@ -220,6 +239,10 @@ def _build_connection() -> duckdb.DuckDBPyConnection:
     # for why this order (and the warmup above) is load-bearing.
     con.execute("SET disabled_filesystems = 'LocalFileSystem'")
     con.execute("SET lock_configuration = true")
+    logger.info(
+        "DuckDB connection ready and locked down in %.1fs",
+        time.perf_counter() - started,
+    )
     return con
 
 
@@ -234,9 +257,14 @@ def _warm_up_remote_filesystem(con: duckdb.DuckDBPyConnection) -> None:
     warmup-before-lockdown ordering self-documenting instead of incidental
     to view registration order.
     """
+    started = time.perf_counter()
+    logger.debug("warming up remote filesystem via %s", _NATURAL_EARTH_PLACES_URL)
     # S608: the only interpolated value is a module-constant URL, never
     # caller input — same false positive as the view SQL below.
     con.execute(f"SELECT 1 FROM ST_Read('{_NATURAL_EARTH_PLACES_URL}') LIMIT 1")  # noqa: S608
+    logger.debug(
+        "remote filesystem warmup done in %.1fs", time.perf_counter() - started
+    )
 
 
 def _register_views(con: duckdb.DuckDBPyConnection) -> None:
@@ -263,6 +291,7 @@ def _register_views(con: duckdb.DuckDBPyConnection) -> None:
             geom AS geometry
         FROM ST_Read('{_NATURAL_EARTH_COUNTRIES_URL}')
     """  # noqa: S608
+    logger.debug("registering view natural_earth_countries")
     con.execute(countries_sql)
 
     places_ne_sql = f"""
@@ -278,6 +307,7 @@ def _register_views(con: duckdb.DuckDBPyConnection) -> None:
             geom AS geometry
         FROM ST_Read('{_NATURAL_EARTH_PLACES_URL}')
     """  # noqa: S608
+    logger.debug("registering view natural_earth_places")
     con.execute(places_ne_sql)
 
     overture_sql = f"""
@@ -285,6 +315,7 @@ def _register_views(con: duckdb.DuckDBPyConnection) -> None:
         SELECT *
         FROM read_parquet('{_OVERTURE_PLACES_PATH}', hive_partitioning=1)
     """  # noqa: S608
+    logger.debug("registering view overture_places (%s)", _OVERTURE_PLACES_PATH)
     con.execute(overture_sql)
 
 
@@ -309,6 +340,12 @@ def _warm_overture_footers(con: duckdb.DuckDBPyConnection) -> None:
     partial progress stays cached — so nothing is broken, only slow.
     Requires ``parquet_metadata_cache = true`` to be worth anything.
     """
+    started = time.perf_counter()
+    logger.info(
+        "warming Overture parquet footer cache in the background "
+        "(budget %.0fs; queries arriving before it finishes run slower)",
+        LOOKUP_TIMEOUT_SECONDS,
+    )
     cursor = con.cursor()
     timer = threading.Timer(LOOKUP_TIMEOUT_SECONDS, cursor.interrupt)
     timer.start()
@@ -318,8 +355,22 @@ def _warm_overture_footers(con: duckdb.DuckDBPyConnection) -> None:
             "WHERE bbox.xmin > 0 AND bbox.xmax < 0.001 "
             "AND bbox.ymin > 0 AND bbox.ymax < 0.001"
         )
-    except duckdb.Error:  # noqa: S110 - warmup is best-effort, see docstring
-        pass
+    except duckdb.Error as error:
+        # Best-effort by design (see docstring): partial progress stays
+        # cached and the first real query re-pays the rest — but say so,
+        # or a slow first query has no explanation in the logs.
+        logger.warning(
+            "Overture footer warmup stopped after %.1fs (%s: %s); "
+            "the first queries will be slower",
+            time.perf_counter() - started,
+            type(error).__name__,
+            error,
+        )
+    else:
+        logger.info(
+            "Overture footer warmup finished in %.1fs",
+            time.perf_counter() - started,
+        )
     finally:
         timer.cancel()
 
@@ -502,11 +553,20 @@ async def execute_capped(
     budget = QUERY_TIMEOUT_SECONDS if timeout is None else timeout
     cursor = CON.cursor()
     finished = asyncio.Event()
+    started = time.perf_counter()
+    logger.debug(
+        "executing (budget %.0fs): %s  params=%s", budget, _oneline(sql), params
+    )
 
     async def watchdog() -> None:
         try:
             await asyncio.wait_for(finished.wait(), timeout=budget)
         except TimeoutError:
+            logger.warning(
+                "query exceeded its %.0fs budget, interrupting: %s",
+                budget,
+                _oneline(sql),
+            )
             cursor.interrupt()
 
     watchdog_task = asyncio.create_task(watchdog())
@@ -514,9 +574,23 @@ async def execute_capped(
         result = await asyncio.to_thread(cursor.execute, sql, params)
         rows = await asyncio.to_thread(result.fetchall)
         columns = [description[0] for description in result.description]
+    except duckdb.Error as error:
+        logger.debug(
+            "query failed after %.1fs (%s: %s)",
+            time.perf_counter() - started,
+            type(error).__name__,
+            error,
+        )
+        raise
     finally:
         finished.set()
         await watchdog_task
+    logger.debug(
+        "query returned %d row(s), %d column(s) in %.1fs",
+        len(rows),
+        len(columns),
+        time.perf_counter() - started,
+    )
     return columns, rows
 
 

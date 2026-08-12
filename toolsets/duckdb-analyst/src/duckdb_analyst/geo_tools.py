@@ -15,6 +15,7 @@ budget the remote Overture scan needs (timings in ``connection.py``).
 """
 
 import json
+import logging
 from typing import Annotated, Any, NotRequired
 
 import duckdb
@@ -29,6 +30,8 @@ from mcp_runtime.tool_result import ToolError, ToolResult
 
 from duckdb_analyst.connection import execute_capped
 from duckdb_analyst.security import LOOKUP_TIMEOUT_SECONDS
+
+logger = logging.getLogger(__name__)
 
 #: A single GeoJSON Feature for one named place (a POI, not an area). Minted
 #: here because the runtime's vocabulary has no kind for it yet — kinds are
@@ -128,7 +131,9 @@ async def get_place(
     city; a whole country will time out). The matched place is published to
     session state for `get_search_area` to buffer around.
     """
+    logger.debug("get_place: name=%r search_bbox=%s", place_name, search_bbox)
     if detail := _validate_bbox(search_bbox):
+        logger.info("get_place rejected bbox %s: %s", search_bbox, detail)
         return ToolError(error="invalid_bbox", detail=detail)
     west, south, east, north = search_bbox
 
@@ -168,9 +173,11 @@ async def get_place(
                 error="timeout",
                 detail="The Overture scan timed out — pass a tighter search_bbox.",
             )
+        logger.warning("get_place query failed: %s", error)
         return ToolError(error="query_failed", detail=str(error))
 
     if not rows:
+        logger.info("get_place: no match for %r in bbox %s", place_name, search_bbox)
         return ToolError(
             error="not_found",
             detail=f"No Overture place matches {place_name!r} in that bbox. "
@@ -188,6 +195,13 @@ async def get_place(
             "websites": _json_list(websites),
             "socials": _json_list(socials),
         },
+    )
+    logger.debug(
+        "get_place: matched %r (id=%s, category=%s, similarity=%.2f)",
+        name,
+        place_id,
+        category,
+        score,
     )
     described = f"{name!r} ({category})" if category else f"{name!r}"
     return GetPlaceResult(
@@ -207,7 +221,9 @@ def get_search_area(
     `buffer_km` is capped at 25 km: the area drives a remote Overture scan,
     and a larger one is a guaranteed timeout rather than a bigger answer.
     """
+    logger.debug("get_search_area: buffer_km=%s", buffer_km)
     if not 0 < buffer_km <= _MAX_BUFFER_KM:
+        logger.info("get_search_area rejected buffer_km=%s", buffer_km)
         return ToolError(
             error="invalid_buffer",
             detail=f"buffer_km must be in (0, {_MAX_BUFFER_KM}] — the search "
@@ -246,6 +262,12 @@ def get_search_area(
         ],
     }
     name = properties.get("name", "the place")
+    logger.debug(
+        "get_search_area: %s km around %r, area bounds %s",
+        buffer_km,
+        name,
+        buffered.bounds,
+    )
     return SearchAreaResult(
         message=f"Search area created: {buffer_km} km around {name}.",
         search_area=search_area,
@@ -265,8 +287,15 @@ async def places_within_area(
     any tool publishing an area of interest). Returns up to `limit` places
     (max 100) as a GeoJSON FeatureCollection plus a readable list.
     """
+    requested = category
     category = _CATEGORY_ALIASES.get(category.lower().strip(), category.lower().strip())
     limit = max(1, min(limit, _PLACES_IN_AREA_LIMIT))
+    logger.debug(
+        "places_within_area: category=%r (from %r), limit=%d",
+        category,
+        requested,
+        limit,
+    )
 
     features = (
         area.get("features", [])
@@ -276,11 +305,19 @@ async def places_within_area(
     try:
         geometry = unary_union([shape(feature["geometry"]) for feature in features])
     except (KeyError, TypeError, AttributeError, ValueError):
+        logger.info("places_within_area: area is not usable GeoJSON")
         return ToolError(
             error="invalid_area",
             detail="area is not GeoJSON — run get_search_area first.",
         )
     west, south, east, north = geometry.bounds
+    logger.debug(
+        "places_within_area: scanning bbox (%.4f, %.4f, %.4f, %.4f)",
+        west,
+        south,
+        east,
+        north,
+    )
 
     sql = """
         SELECT
@@ -315,6 +352,7 @@ async def places_within_area(
                 error="timeout",
                 detail="The Overture scan timed out — use a smaller search area.",
             )
+        logger.warning("places_within_area query failed: %s", error)
         return ToolError(error="query_failed", detail=str(error))
 
     collection: dict[str, Any] = {

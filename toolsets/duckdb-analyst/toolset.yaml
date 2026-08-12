@@ -11,3 +11,10 @@ resources:
   limits:
     cpu: "1"
     memory: 1Gi
+
+# Verbose logging for the deployed pod: every SQL statement, parameters,
+# timings and row counts (duckdb_analyst), plus FastMCP/uvicorn debug —
+# see src/duckdb_analyst/__init__.py. Local dev gets this from .env instead.
+# env:
+#   - name: LOG_LEVEL
+#     value: DEBUG

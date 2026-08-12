@@ -258,3 +258,28 @@ async def test_rejects_pragma():
 async def test_rejects_duckdb_secrets():
     result = await query.ainvoke({"sql": "SELECT * FROM duckdb_secrets()"})
     assert is_error(result)
+
+
+# ---------------------------------------------------------------------------
+# Views
+# ---------------------------------------------------------------------------
+
+
+def test_views_name_real_tools_with_ui_sources():
+    """Every VIEWS entry names a shipped tool and a view page in ui/.
+
+    The runtime re-validates the tool names (plus built bundles) at
+    build_server time; checking the ui/ *sources* here catches a typo'd or
+    orphaned view id in CI, where the vite build has not run.
+    """
+    from pathlib import Path
+
+    from duckdb_analyst.tools import TOOLS, VIEWS
+
+    tool_names = {tool.name for tool in TOOLS}
+    assert set(VIEWS) <= tool_names
+    ui_dir = Path(__file__).resolve().parents[1] / "ui"
+    for view_id in set(VIEWS.values()):
+        assert (ui_dir / f"{view_id}.html").is_file(), (
+            f"view {view_id!r} has no ui/{view_id}.html source page"
+        )

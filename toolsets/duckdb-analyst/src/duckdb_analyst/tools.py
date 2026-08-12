@@ -17,6 +17,7 @@ raising.
 """
 
 import json
+import logging
 from typing import Any, NotRequired
 
 import duckdb
@@ -27,6 +28,8 @@ from mcp_runtime.tool_result import ToolError, ToolResult
 from duckdb_analyst.connection import SOURCES, SourceInfo, execute_capped
 from duckdb_analyst.geo_tools import GEO_TOOLS
 from duckdb_analyst.security import clamp_limit, validate_select_only
+
+logger = logging.getLogger(__name__)
 
 
 class ListSourcesResult(ToolResult):
@@ -92,9 +95,12 @@ async def _run_query(
     statement-shape validation, the row cap, and the ToolError mapping.
     """
     if detail := validate_select_only(sql):
+        logger.info("rejected caller SQL (%s): %r", detail, sql)
         return ToolError(error="invalid_query", detail=detail)
 
     capped_limit = clamp_limit(limit)
+    if capped_limit != limit:
+        logger.debug("row limit clamped: %d -> %d", limit, capped_limit)
     executable = _wrap_with_limit(sql, capped_limit)
     try:
         columns, rows = await execute_capped(executable)
@@ -104,6 +110,7 @@ async def _run_query(
             if isinstance(error, duckdb.InterruptException)
             else "query_failed"
         )
+        logger.warning("caller SQL failed (%s): %s", kind, error)
         return ToolError(error=kind, detail=str(error))
 
     records = [_json_safe(dict(zip(columns, row, strict=True))) for row in rows]
@@ -169,3 +176,16 @@ async def chart(
 
 
 TOOLS = [list_sources, query, chart, *GEO_TOOLS]
+
+# Map tools to UI views (built from ui/ into src/duckdb_analyst/views/, served
+# as ui://duckdb-analyst/<view_id> and rendered by any MCP Apps host). Views
+# are progressive enhancement: every result's message + data stand alone in a
+# plain client. The three geo tools share one map view — it renders whichever
+# GeoJSON key (place / search_area / places) the result carries.
+VIEWS = {
+    "query": "table",
+    "chart": "chart",
+    "get_place": "map",
+    "get_search_area": "map",
+    "places_within_area": "map",
+}
