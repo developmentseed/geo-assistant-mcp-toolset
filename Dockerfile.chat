@@ -1,0 +1,31 @@
+# The hosted Chainlit chat UI (mcp-agent-web). Separate from the toolset
+# Dockerfile: this image runs the agent, not mcp-serve, and bundles a set of
+# chat-model providers so users can bring their own model. No provider API key
+# is baked in — each user supplies their own in the UI at runtime (BYOM).
+FROM ghcr.io/astral-sh/uv:python3.12-bookworm-slim AS builder
+ENV UV_COMPILE_BYTECODE=1 UV_LINK_MODE=copy
+WORKDIR /app
+COPY . .
+# The chat serves no toolset — it needs mcp_agent, which is the runtime's
+# [agent] extra, at the version uv.lock already pins (the `chat` group).
+RUN uv sync --frozen --no-dev --no-editable --only-group chat
+# Provider packages are installed on top of the locked venv rather than added to
+# the workspace, so the repo stays provider-agnostic while the hosted image can
+# serve any of these via PROVIDER_MODEL=<provider>:<model>. Bump as needed.
+RUN uv pip install --python /app/.venv \
+        "langchain-anthropic>=1.1,<2" \
+        "langchain-openai>=1.1,<2" \
+        "langchain-google-genai>=3,<4" \
+        "langchain-mistralai>=1.1,<2"
+# Chainlit resolves custom elements (the McpView iframe host) from ./public.
+# The element ships inside mcp-toolsets-runtime, so take it from the installed
+# package at build time rather than vendoring a copy in this repo.
+RUN /app/.venv/bin/mcp-agent install-elements /app/public/elements
+
+FROM python:3.12-slim-bookworm
+ENV CHAINLIT_HOST=0.0.0.0 CHAINLIT_PORT=8080 PATH="/app/.venv/bin:$PATH"
+WORKDIR /app
+COPY --from=builder /app/.venv /app/.venv
+COPY --from=builder /app/public/ /app/public/
+EXPOSE 8080
+CMD ["mcp-agent-web"]

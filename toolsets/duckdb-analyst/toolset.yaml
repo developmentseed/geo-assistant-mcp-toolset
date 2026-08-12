@@ -1,0 +1,13 @@
+# Helm values overrides for this toolset (see charts/mcp-toolset/values.yaml).
+#
+# DuckDB needs more headroom than the chart's 512Mi default even for
+# capped, LIMIT-bounded queries over remote parquet — the connection's own
+# `memory_limit` (see connection.py) is set to 700MB, sized against this pod
+# limit with room left for Python/uvicorn overhead.
+resources:
+  requests:
+    cpu: 100m
+    memory: 256Mi
+  limits:
+    cpu: "1"
+    memory: 1Gi

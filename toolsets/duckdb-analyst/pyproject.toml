@@ -1,0 +1,16 @@
+[project]
+name = "duckdb-analyst"
+version = "0.1.0"
+description = "Read-only, sandbox-free SQL analysis over public parquet datasets (Natural Earth, Overture Maps places, plus any public parquet/CSV URL) via DuckDB, with kind-tagged geo workflow tools."
+requires-python = ">=3.12,<3.14"
+dependencies = [
+    "duckdb>=1.5.5,<2.0.0",
+    "langchain-core<2.0.0,>=1.4.6",
+    "mcp-toolsets-runtime",
+    "pyproj>=3.7.2,<4.0.0",
+    "shapely>=2.1.2,<3.0.0",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"

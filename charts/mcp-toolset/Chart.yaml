@@ -1,0 +1,6 @@
+apiVersion: v2
+name: mcp-toolset
+description: Generic chart deploying a toolset as an MCP service.
+type: application
+version: 0.1.0
+appVersion: "0.1.0"

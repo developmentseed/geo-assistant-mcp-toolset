@@ -1,0 +1,35 @@
+image:
+  repository: ""
+  tag: ""
+
+# Names of existing docker-registry Secrets for pulling private images.
+# The default matches the secret the README's cluster setup creates.
+imagePullSecrets:
+  - ghcr-pull
+
+replicas: 1
+
+resources:
+  requests:
+    cpu: 50m
+    memory: 128Mi
+  limits:
+    cpu: 200m
+    memory: 256Mi
+
+service:
+  port: 8000
+
+ingress:
+  # Shared hostname all toolsets are served under (required); the index
+  # answers at its root, toolset Ingresses claim the /<name> paths.
+  host: ""
+  className: nginx
+  # Name of the TLS Secret covering ingress.host. Empty means plain HTTP
+  # (PUBLIC_URL switches scheme to match).
+  tlsSecret: ""
+  # cert-manager ClusterIssuer that should issue tlsSecret. Annotated on this
+  # Ingress only — one Ingress per host may manage the shared Certificate.
+  # Empty means the Secret is created some other way.
+  clusterIssuer: letsencrypt
+  annotations: {}

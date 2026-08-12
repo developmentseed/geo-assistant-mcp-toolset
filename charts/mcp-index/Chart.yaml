@@ -1,0 +1,6 @@
+apiVersion: v2
+name: mcp-index
+description: Public directory of every deployed mcp-toolset service.
+type: application
+version: 0.1.0
+appVersion: "0.1.0"

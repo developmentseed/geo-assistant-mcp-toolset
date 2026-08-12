@@ -1,0 +1,43 @@
+image:
+  repository: ""
+  tag: ""
+
+# Names of existing docker-registry Secrets for pulling private images.
+# The default matches the secret the README's cluster setup creates.
+imagePullSecrets:
+  - ghcr-pull
+
+replicas: 1
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 256Mi
+  limits:
+    cpu: 500m
+    memory: 512Mi
+
+service:
+  port: 8080
+
+# The index this chat discovers toolsets behind. The in-cluster index Service
+# answers a connections map at its root; the toolset URLs in it are the public
+# ingress URLs, so the chat reaches tools over the ingress (no extra wiring).
+mcpUrl: "http://mcp-index:8000/"
+
+ingress:
+  # Hostname for the chat UI — a dedicated name, e.g. chat.<shared-domain>.
+  # There is NO provider key here: the model is bring-your-own, set per user in
+  # the UI, so exposing this host does not expose a server-held secret.
+  host: ""
+  className: nginx
+  # Name of the TLS Secret covering ingress.host. Empty means plain HTTP.
+  tlsSecret: ""
+  # cert-manager ClusterIssuer that should issue tlsSecret. Empty means the
+  # Secret is created some other way.
+  clusterIssuer: letsencrypt
+  annotations:
+    # Chainlit uses a WebSocket (Socket.IO) for the chat stream; keep the
+    # upstream connection open well past the default 60s idle timeout.
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"

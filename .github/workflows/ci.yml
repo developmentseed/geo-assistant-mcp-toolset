@@ -1,0 +1,92 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+      - run: uv sync --frozen
+      - run: ./scripts/lint
+      - run: ./scripts/test
+
+  helm:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - run: >
+          helm lint charts/mcp-toolset
+          --set name=test
+          --set image.repository=test
+          --set image.tag=test
+      - run: >
+          helm lint charts/mcp-index
+          --set ingress.host=test.example.com
+          --set image.repository=test
+          --set image.tag=test
+
+  ui:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: "22"
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+      - run: uv sync --frozen
+      # Typecheck + bundle every toolset UI (fails on a TS error, which the
+      # Docker/vite build alone would not catch).
+      - run: ./scripts/build-views
+      # A toolset that declares VIEWS must have the bundles it names: build_server
+      # validates the VIEWS<->bundle wiring and stamps each tool's _meta.
+      - name: Validate view wiring
+        run: |
+          for manifest in toolsets/*/ui/package.json; do
+            [ -f "$manifest" ] || continue
+            name=$(basename "$(dirname "$(dirname "$manifest")")")
+            echo "validating $name"
+            TOOLSET="$name" uv run python -c \
+              "import os; from mcp_runtime.server import build_server; build_server(os.environ['TOOLSET'])"
+          done
+
+  detect:
+    runs-on: ubuntu-latest
+    outputs:
+      toolsets: ${{ steps.changed.outputs.toolsets }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+      - id: changed
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            range="${{ github.event.pull_request.base.sha }}..${{ github.sha }}"
+          else
+            range="${{ github.event.before }}..${{ github.sha }}"
+          fi
+          echo "toolsets=$(./scripts/changed-toolsets "$range")" >> "$GITHUB_OUTPUT"
+
+  docker:
+    needs: detect
+    if: needs.detect.outputs.toolsets != '[]'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        toolset: ${{ fromJSON(needs.detect.outputs.toolsets) }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4
+      - name: Build changed toolset image (no push)
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7
+        with:
+          context: .
+          push: false
+          build-args: TOOLSET=${{ matrix.toolset }}
+          cache-from: type=gha,scope=mcp-${{ matrix.toolset }}
+          cache-to: type=gha,scope=mcp-${{ matrix.toolset }},mode=max

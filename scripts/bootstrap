@@ -1,0 +1,123 @@
+#!/usr/bin/env sh
+# One-time template bootstrap. Run this once, after creating a repository from
+# the template:
+#
+#   ./scripts/bootstrap [namespace] [--remove-examples | --keep-examples]
+#
+# It does two things:
+#   1. Sets the MCP_NAMESPACE GitHub Actions variable to the Kubernetes
+#      namespace your toolsets deploy into (default: mcp-toolsets). It is a
+#      repo variable, not a committed value, so it never copies into repos
+#      generated from this template.
+#   2. Optionally removes the shipped example toolsets (hello, credential-demo).
+#
+# Re-running is safe: setting the variable is idempotent, and example removal
+# skips any toolset already gone. Everything else (the GHCR image path, the
+# index host) is configured at deploy time from GitHub secrets.
+
+set -e
+
+DEFAULT_NS="mcp-toolsets"
+EXAMPLES="hello credential-demo"
+
+usage() {
+    echo "usage: scripts/bootstrap [namespace] [--remove-examples | --keep-examples]" >&2
+}
+
+ns=""
+remove_mode=""  # "" prompt, "all" remove every example, "none" keep them
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --remove-examples) remove_mode="all" ;;
+        --keep-examples) remove_mode="none" ;;
+        --namespace) shift; ns="$1" ;;
+        -h | --help) usage; exit 0 ;;
+        -*) echo "error: unknown option '$1'" >&2; usage; exit 1 ;;
+        *) ns="$1" ;;
+    esac
+    shift
+done
+
+# --- 1. Namespace --------------------------------------------------------
+if [ -z "$ns" ]; then
+    printf "Kubernetes namespace for this deployment [%s]: " "$DEFAULT_NS"
+    read -r ns || true
+    ns="${ns:-$DEFAULT_NS}"
+fi
+case "$ns" in
+    *[!a-z0-9-]* | -* | *-)
+        echo "error: namespace must be kebab-case (lowercase letters, digits, hyphens)" >&2
+        exit 1
+        ;;
+esac
+
+# The namespace has two homes:
+#   1. the MCP_NAMESPACE repo Actions variable, which the deploy workflow reads —
+#      kept out of committed files so it never copies into generated repos; and
+#   2. the __MCP_NAMESPACE__ placeholder in the docs' manual cluster-setup
+#      commands, substituted here so those commands are copy-pasteable.
+# Deploys need the variable *and* the KUBE_CONFIG secret (see closing notes).
+if command -v gh >/dev/null 2>&1 && gh variable set MCP_NAMESPACE --body "$ns" 2>/dev/null; then
+    echo "Namespace: set repo variable MCP_NAMESPACE=$ns"
+else
+    echo "Namespace: set the variable yourself (gh missing, unauthenticated, or no remote):"
+    echo "  gh variable set MCP_NAMESPACE --body $ns"
+fi
+
+files="
+README.md
+CLAUDE.md
+"
+changed=""
+for f in $files; do
+    [ -f "$f" ] || continue
+    if grep -q "__MCP_NAMESPACE__" "$f" 2>/dev/null; then
+        perl -pi -e "s/__MCP_NAMESPACE__/$ns/g" "$f"
+        changed="$changed $f"
+    fi
+done
+if [ -n "$changed" ]; then
+    echo "Docs: substituted __MCP_NAMESPACE__ ->$ns in$changed"
+fi
+
+# --- 2. Example toolsets -------------------------------------------------
+remove_one() {
+    if command -v uv >/dev/null 2>&1; then
+        ./scripts/remove-toolset "$1"
+    else
+        echo "  uv not found — skip; remove later with ./scripts/remove-toolset $1" >&2
+    fi
+}
+
+for t in $EXAMPLES; do
+    [ -d "toolsets/$t" ] || continue
+    case "$remove_mode" in
+        all) remove_one "$t" ;;
+        none) echo "Keeping example toolset '$t'." ;;
+        *)
+            printf "Remove the example toolset '%s'? [y/N]: " "$t"
+            read -r ans || true
+            case "$ans" in
+                y | Y | yes | YES) remove_one "$t" ;;
+                *) echo "Keeping '$t'." ;;
+            esac
+            ;;
+    esac
+done
+
+cat <<EOF
+
+Bootstrapped to namespace '$ns'. Next steps:
+
+  1. Add your first toolset:        uv run mcp-toolset new my-toolset
+  2. Develop locally:               uv sync && ./scripts/test
+                                     TOOLSET=hello uv run mcp-serve   # if kept
+                                     uv run mcp-cli call hello name=dev
+  3. When you have a cluster, set the KUBE_CONFIG secret (see README > Kubernetes
+     cluster setup). The MCP_NAMESPACE variable is already set; deploys run once
+     both it and KUBE_CONFIG exist — until then CI is green but deploys skip:
+        gh secret set KUBE_CONFIG < your.kubeconfig
+        gh secret set MCP_INGRESS_HOST --body <hostname>   # optional shared domain
+  4. Commit the result (if any examples were removed):
+        git add -A && git commit -m "Bootstrap template for $ns"
+EOF

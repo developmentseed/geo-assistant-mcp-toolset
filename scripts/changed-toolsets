@@ -1,0 +1,34 @@
+#!/usr/bin/env sh
+# Emit a JSON array of toolset names whose images need rebuilding for a git range.
+#
+# Usage: scripts/changed-toolsets <before>..<after>
+#
+# Changes to shared build inputs (charts/, Dockerfile, uv.lock, root
+# pyproject.toml) are baked into every image, so they select ALL toolsets.
+# uv.lock covers a runtime upgrade: the runtime is a pinned dependency now, so
+# bumping it lands there rather than in any tracked source directory.
+# Otherwise only the changed toolsets/<name> directories are selected. An
+# unusable range (e.g. first push, before-sha all zeros) selects all toolsets.
+
+set -e
+
+range="$1"
+
+all_toolsets() {
+    ls toolsets
+}
+
+json_array() {
+    python3 -c 'import json,sys; print(json.dumps(sorted({l.strip() for l in sys.stdin if l.strip()})))'
+}
+
+if [ -z "$range" ] || ! changed=$(git diff --name-only "$range" 2>/dev/null); then
+    all_toolsets | json_array
+    exit 0
+fi
+
+if echo "$changed" | grep -qE '^(charts/|Dockerfile|uv\.lock|pyproject\.toml)'; then
+    all_toolsets | json_array
+else
+    echo "$changed" | grep '^toolsets/' | cut -d/ -f2 | json_array
+fi

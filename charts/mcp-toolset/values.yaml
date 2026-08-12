@@ -1,0 +1,48 @@
+# Toolset name (required), e.g. "dataset-search". Resources become mcp-<name>.
+name: ""
+
+image:
+  repository: ""
+  tag: ""
+
+# Names of existing docker-registry Secrets for pulling private images.
+# The default matches the secret the README's cluster setup creates.
+imagePullSecrets:
+  - ghcr-pull
+
+replicas: 1
+
+resources:
+  requests:
+    cpu: 50m
+    memory: 128Mi
+  limits:
+    cpu: 500m
+    memory: 512Mi
+
+# Extra environment variables, e.g. [{name: FOO, value: bar}]
+env: []
+
+# Names of existing k8s Secrets to expose to the pod via envFrom.
+secrets: []
+
+service:
+  port: 8000
+
+# Expose this toolset on one shared domain. Every release with the same
+# ingress.host contributes its own path — the controller merges same-host
+# rules — so the toolset is reachable at https://<host>/<name>/mcp.
+ingress:
+  enabled: false
+  # Shared hostname for all toolsets, e.g. mcp-x7k2q9.example.com.
+  host: ""
+  className: nginx
+  # Name of an existing TLS Secret in the namespace covering ingress.host
+  # (e.g. from a wildcard cert). Empty means plain HTTP.
+  tlsSecret: ""
+  # Defaults assume ingress-nginx: strip the /<name> prefix so the pod
+  # still sees /mcp, and keep streamable-HTTP (SSE) responses unbuffered.
+  annotations:
+    nginx.ingress.kubernetes.io/rewrite-target: /$2
+    nginx.ingress.kubernetes.io/proxy-buffering: "off"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"

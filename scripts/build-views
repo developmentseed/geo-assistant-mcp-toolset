@@ -1,0 +1,20 @@
+#!/usr/bin/env sh
+# Build every toolset's UI views: for each toolsets/<name>/ui, run a clean
+# install, typecheck and bundle (npm run build -> tsc + vite). Writes the
+# self-contained view HTML into each package's views/ dir. Run from the repo
+# root; used by CI and to rebuild all views at once locally. Needs node.
+
+set -e
+
+found=0
+for manifest in toolsets/*/ui/package.json; do
+    [ -f "$manifest" ] || continue
+    found=1
+    ui_dir=$(dirname "$manifest")
+    echo "== building views: $ui_dir =="
+    (cd "$ui_dir" && npm ci && npm run build)
+done
+
+if [ "$found" = 0 ]; then
+    echo "no toolset UIs to build"
+fi

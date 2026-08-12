@@ -1,0 +1,18 @@
+# One-time cluster setup (see README "Kubernetes cluster setup"): tells
+# cert-manager how to reach Let's Encrypt. Certificates themselves are
+# requested automatically via the cert-manager.io/cluster-issuer annotation
+# on the mcp-index Ingress.
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: letsencrypt
+spec:
+  acme:
+    server: https://acme-v02.api.letsencrypt.org/directory
+    email: you@example.com # the only value to change
+    privateKeySecretRef:
+      name: letsencrypt-account-key # created by cert-manager, any unused name works
+    solvers:
+      - http01:
+          ingress:
+            ingressClassName: nginx

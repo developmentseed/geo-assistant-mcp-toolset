@@ -1,0 +1,42 @@
+#!/usr/bin/env sh
+# Remove a toolset: scripts/remove-toolset <name>
+#
+# Deletes toolsets/<name> and deregisters it from the uv workspace. Merging
+# the removal to main uninstalls the deployed mcp-<name> release: the deploy
+# workflow reconciles the cluster against the toolsets/ directory.
+
+set -e
+
+name="$1"
+if [ -z "$name" ]; then
+    echo "usage: scripts/remove-toolset <name>" >&2
+    exit 1
+fi
+dir="toolsets/$name"
+if [ ! -d "$dir" ]; then
+    echo "error: $dir does not exist" >&2
+    exit 1
+fi
+
+uv remove "$name"
+rm -rf "$dir"
+# Re-lock: the removal above ran while the directory still existed, so the
+# lockfile still listed it as a workspace member.
+uv sync
+
+echo
+echo "Removed $dir and deregistered it from the workspace."
+echo "Merge to main: the deploy workflow uninstalls the mcp-$name release."
+echo "Not removed automatically: out-of-band Secrets the toolset listed in"
+echo "toolset.yaml, and its images in GHCR."
+
+# Other code or docs may still reference the toolset (README examples, tests
+# using it as a fixture, ...). Surface them so the removal ships clean.
+pkg=$(echo "$name" | tr '-' '_')
+refs=$(git grep -l -e "$name" -e "$pkg" -- ':!uv.lock' 2>/dev/null || true)
+if [ -n "$refs" ]; then
+    echo
+    echo "Heads-up: '$name' is still referenced in:"
+    echo "$refs" | sed 's/^/  /'
+    echo "Update or remove those references before merging (./scripts/test)."
+fi

@@ -1,0 +1,230 @@
+name: Deploy
+
+on:
+  push:
+    branches: [main]
+  # Manual full deploy of every toolset (e.g. after fixing the workflow itself,
+  # which isn't a path changed-toolsets rebuilds for).
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  # The deploy namespace is per-instance config supplied as a repo Actions
+  # variable, never a committed value — so it does not copy into repos generated
+  # from this template. Empty until set, which (with KUBE_CONFIG) gates every
+  # cluster-touching job below.
+  MCP_NAMESPACE: ${{ vars.MCP_NAMESPACE }}
+
+jobs:
+  detect:
+    runs-on: ubuntu-latest
+    outputs:
+      toolsets: ${{ steps.changed.outputs.toolsets }}
+      ingress: ${{ steps.ingress.outputs.enabled }}
+      deploy: ${{ steps.deploy.outputs.enabled }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+      - id: changed
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            range=""  # unusable range => changed-toolsets selects all
+          else
+            range="${{ github.event.before }}..${{ github.sha }}"
+          fi
+          echo "toolsets=$(./scripts/changed-toolsets "$range")" >> "$GITHUB_OUTPUT"
+      - id: ingress
+        env:
+          MCP_INGRESS_HOST: ${{ secrets.MCP_INGRESS_HOST }}
+        run: echo "enabled=${MCP_INGRESS_HOST:+true}" >> "$GITHUB_OUTPUT"
+      # A fresh template instance has neither a kubeconfig nor a namespace, so
+      # skip every job that touches a cluster — CI stays green until both the
+      # KUBE_CONFIG secret and the MCP_NAMESPACE variable are configured.
+      - id: deploy
+        env:
+          KUBE_CONFIG: ${{ secrets.KUBE_CONFIG }}
+        run: |
+          enabled=""
+          if [ -n "$KUBE_CONFIG" ] && [ -n "$MCP_NAMESPACE" ]; then
+            enabled="true"
+          fi
+          echo "enabled=$enabled" >> "$GITHUB_OUTPUT"
+
+  deploy:
+    needs: detect
+    if: needs.detect.outputs.toolsets != '[]' && needs.detect.outputs.deploy == 'true'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        toolset: ${{ fromJSON(needs.detect.outputs.toolsets) }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - id: image
+        name: Compute image name (ghcr requires lowercase)
+        run: echo "repository=ghcr.io/${GITHUB_REPOSITORY@L}/mcp-${{ matrix.toolset }}" >> "$GITHUB_OUTPUT"
+      - uses: docker/login-action@af1e73f918a031802d376d3c8bbc3fe56130a9b0 # v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4
+      - uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7
+        with:
+          context: .
+          push: true
+          build-args: TOOLSET=${{ matrix.toolset }}
+          tags: ${{ steps.image.outputs.repository }}:${{ github.sha }}
+          cache-from: type=gha,scope=mcp-${{ matrix.toolset }}
+          cache-to: type=gha,scope=mcp-${{ matrix.toolset }},mode=max
+      - name: Configure kubeconfig
+        run: |
+          mkdir -p ~/.kube
+          printf '%s' "${KUBE_CONFIG}" > ~/.kube/config
+          chmod 600 ~/.kube/config
+        env:
+          KUBE_CONFIG: ${{ secrets.KUBE_CONFIG }}
+      - name: Deploy with Helm
+        env:
+          MCP_INGRESS_HOST: ${{ secrets.MCP_INGRESS_HOST }}
+        run: |
+          values=""
+          if [ -f "toolsets/${{ matrix.toolset }}/toolset.yaml" ]; then
+            values="-f toolsets/${{ matrix.toolset }}/toolset.yaml"
+          fi
+          if [ -n "$MCP_INGRESS_HOST" ]; then
+            values="$values --set ingress.enabled=true --set ingress.host=$MCP_INGRESS_HOST --set ingress.tlsSecret=${MCP_NAMESPACE}-tls"
+          fi
+          helm upgrade --install "mcp-${{ matrix.toolset }}" charts/mcp-toolset \
+            --namespace "$MCP_NAMESPACE" \
+            --set name="${{ matrix.toolset }}" \
+            --set image.repository="${{ steps.image.outputs.repository }}" \
+            --set image.tag="${{ github.sha }}" \
+            $values
+
+  reconcile:
+    needs: detect
+    # Removing a toolset always touches shared paths (uv.lock, root
+    # pyproject.toml), so any removal lands in a run with a non-empty matrix;
+    # docs-only pushes skip, keeping kubeconfig out of no-op runs.
+    if: needs.detect.outputs.toolsets != '[]' && needs.detect.outputs.deploy == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Configure kubeconfig
+        run: |
+          mkdir -p ~/.kube
+          printf '%s' "${KUBE_CONFIG}" > ~/.kube/config
+          chmod 600 ~/.kube/config
+        env:
+          KUBE_CONFIG: ${{ secrets.KUBE_CONFIG }}
+      - name: Uninstall releases whose toolset directory is gone
+        run: |
+          for release in $(helm list --namespace "$MCP_NAMESPACE" --short); do
+            case "$release" in
+              mcp-index) continue ;;
+              mcp-*) toolset="${release#mcp-}" ;;
+              *) continue ;;
+            esac
+            if [ ! -d "toolsets/$toolset" ]; then
+              echo "Uninstalling $release: toolsets/$toolset no longer exists"
+              helm uninstall "$release" --namespace "$MCP_NAMESPACE"
+            fi
+          done
+
+  index:
+    needs: detect
+    # Skip no-op pushes (e.g. docs): the index image is built from shared code,
+    # and any shared-code change already selects all toolsets in detect.
+    if: needs.detect.outputs.ingress == 'true' && needs.detect.outputs.toolsets != '[]' && needs.detect.outputs.deploy == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - id: image
+        name: Compute image name (ghcr requires lowercase)
+        run: echo "repository=ghcr.io/${GITHUB_REPOSITORY@L}/mcp-index" >> "$GITHUB_OUTPUT"
+      - uses: docker/login-action@af1e73f918a031802d376d3c8bbc3fe56130a9b0 # v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4
+      - uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7
+        with:
+          context: .
+          push: true
+          # The sentinel the Dockerfile branches on: install the runtime alone
+          # (the `index` dependency group) — no toolsets, no UI build.
+          build-args: TOOLSET=index
+          tags: ${{ steps.image.outputs.repository }}:${{ github.sha }}
+          cache-from: type=gha,scope=mcp-index
+          cache-to: type=gha,scope=mcp-index,mode=max
+      - name: Configure kubeconfig
+        run: |
+          mkdir -p ~/.kube
+          printf '%s' "${KUBE_CONFIG}" > ~/.kube/config
+          chmod 600 ~/.kube/config
+        env:
+          KUBE_CONFIG: ${{ secrets.KUBE_CONFIG }}
+      - name: Deploy with Helm
+        env:
+          MCP_INGRESS_HOST: ${{ secrets.MCP_INGRESS_HOST }}
+        run: |
+          helm upgrade --install mcp-index charts/mcp-index \
+            --namespace "$MCP_NAMESPACE" \
+            --set image.repository="${{ steps.image.outputs.repository }}" \
+            --set image.tag="${{ github.sha }}" \
+            --set ingress.host="$MCP_INGRESS_HOST" \
+            --set ingress.tlsSecret=${MCP_NAMESPACE}-tls
+
+  chat:
+    needs: detect
+    # The hosted BYOM chat UI. Gated like the index (shared code selects all
+    # toolsets; docs-only pushes skip). No provider secret is deployed — the
+    # model is bring-your-own, entered per user in the UI.
+    if: needs.detect.outputs.ingress == 'true' && needs.detect.outputs.toolsets != '[]' && needs.detect.outputs.deploy == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - id: image
+        name: Compute image name (ghcr requires lowercase)
+        run: echo "repository=ghcr.io/${GITHUB_REPOSITORY@L}/mcp-chat" >> "$GITHUB_OUTPUT"
+      - uses: docker/login-action@af1e73f918a031802d376d3c8bbc3fe56130a9b0 # v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4
+      - uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7
+        with:
+          context: .
+          file: Dockerfile.chat
+          push: true
+          tags: ${{ steps.image.outputs.repository }}:${{ github.sha }}
+          cache-from: type=gha,scope=mcp-chat
+          cache-to: type=gha,scope=mcp-chat,mode=max
+      - name: Configure kubeconfig
+        run: |
+          mkdir -p ~/.kube
+          printf '%s' "${KUBE_CONFIG}" > ~/.kube/config
+          chmod 600 ~/.kube/config
+        env:
+          KUBE_CONFIG: ${{ secrets.KUBE_CONFIG }}
+      - name: Deploy with Helm
+        env:
+          MCP_INGRESS_HOST: ${{ secrets.MCP_INGRESS_HOST }}
+          # Optional override; defaults to chat.<shared-domain>. Needs its own
+          # DNS record and (with cert-manager) a cert for the chat host.
+          MCP_CHAT_HOST: ${{ secrets.MCP_CHAT_HOST }}
+        run: |
+          chat_host="${MCP_CHAT_HOST:-chat.$MCP_INGRESS_HOST}"
+          helm upgrade --install mcp-chat charts/mcp-chat \
+            --namespace "$MCP_NAMESPACE" \
+            --set image.repository="${{ steps.image.outputs.repository }}" \
+            --set image.tag="${{ github.sha }}" \
+            --set ingress.host="$chat_host" \
+            --set ingress.tlsSecret=${MCP_NAMESPACE}-chat-tls

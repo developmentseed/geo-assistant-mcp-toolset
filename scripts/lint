@@ -1,0 +1,7 @@
+#!/usr/bin/env sh
+
+set -e
+
+uv run ruff check --select S
+uv run ruff format --check
+uv run mypy tests toolsets

@@ -1,0 +1,36 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: mcp-index
+  labels:
+    {{- include "mcp-index.labels" . | nindent 4 }}
+  {{- if or (and .Values.ingress.tlsSecret .Values.ingress.clusterIssuer) .Values.ingress.annotations }}
+  annotations:
+    {{- if and .Values.ingress.tlsSecret .Values.ingress.clusterIssuer }}
+    cert-manager.io/cluster-issuer: {{ .Values.ingress.clusterIssuer }}
+    {{- end }}
+    {{- with .Values.ingress.annotations }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+  {{- end }}
+spec:
+  ingressClassName: {{ .Values.ingress.className }}
+  {{- with .Values.ingress.tlsSecret }}
+  tls:
+    - hosts:
+        - {{ include "mcp-index.host" $ | quote }}
+      secretName: {{ . }}
+  {{- end }}
+  rules:
+    - host: {{ include "mcp-index.host" . | quote }}
+      http:
+        # Plain prefix `/` loses to the toolset Ingresses' regex paths in
+        # ingress-nginx, so the index only answers what no toolset claims.
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: mcp-index
+                port:
+                  name: http
