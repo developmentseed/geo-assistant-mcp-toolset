@@ -2,10 +2,18 @@
 
 The [geo-assistant](https://github.com/developmentseed/geo-assistant) workflow
 rebuilt as MCP toolsets: Overture Maps place lookup, geodesic buffering and
-spatial SQL over a locked-down DuckDB connection, with geometries flowing
-between tools through session state (never through the model). One toolset so
-far — `toolsets/duckdb-analyst/`, whose `geo_tools.py` is the ported
-place → search-area → places-within-area chain.
+spatial SQL over a locked-down DuckDB connection, plus NAIP aerial imagery
+interpreted by a locally served vision model — with geometries and images
+flowing between tools through session state (never through the model). Two
+toolsets: `toolsets/duckdb-analyst/`, whose `geo_tools.py` is the ported
+place → search-area → places-within-area chain, and `toolsets/naip-imagery/`,
+which continues that chain — it fetches NAIP imagery from Microsoft Planetary
+Computer over the same search area and describes it with an Ollama vision
+model (`OLLAMA_BASE_URL`/`OLLAMA_IMAGE_MODEL`, default
+`localhost:11434`/`gemma4:cloud`). The default is an Ollama **cloud**
+model, so the localhost demo needs no GPU: `ollama signin`, then
+`ollama pull gemma4:cloud`. Any locally pulled vision model works
+via `OLLAMA_IMAGE_MODEL`.
 
 This is an instance of the
 [mcp-toolsets](https://github.com/developmentseed/mcp-toolsets) template — a
@@ -119,20 +127,25 @@ producer and the consumer can live in different toolsets on different servers,
 and the parameter leaves the model's schema entirely — it can't be hallucinated
 because it is never offered.
 
-`geo_tools.py` is the worked example: the ported geo-assistant state flow is
-three kind-tagged hops.
+The ported geo-assistant state flow is the worked example: kind-tagged hops
+spanning two toolsets — `duckdb-analyst`'s `geo_tools.py` and
+`naip-imagery` — which is exactly the cross-server case the kinds exist for.
 
-| Tool | Consumes (parameter) | Publishes (result key) |
+| Tool (toolset) | Consumes (parameter) | Publishes (result key) |
 | --- | --- | --- |
-| `get_place` | — | `place` · `geojson.PlaceFeature` |
-| `get_search_area` | `place` · `geojson.PlaceFeature` | `search_area` · `geojson.AreaOfInterest` |
-| `places_within_area` | `area` · `geojson.AreaOfInterest` | `places` · untagged |
+| `get_place` (duckdb-analyst) | — | `place` · `geojson.PlaceFeature` |
+| `get_search_area` (duckdb-analyst) | `place` · `geojson.PlaceFeature` | `search_area` · `geojson.AreaOfInterest` |
+| `places_within_area` (duckdb-analyst) | `area` · `geojson.AreaOfInterest` | `places` · untagged |
+| `fetch_naip_image` (naip-imagery) | `area` · `geojson.AreaOfInterest` | `naip_image` · `image.JpegBase64` |
+| `interpret_image` (naip-imagery) | `image` · `image.JpegBase64` | — |
 
 `geojson.AreaOfInterest` comes from the runtime's `mcp_runtime.kinds`
-vocabulary. `geojson.PlaceFeature` is minted in `geo_tools.py`, because the
-vocabulary has no kind for a single place yet — kinds are plain strings, so
-producer and consumer agreeing on the text is the whole contract (worth
-upstreaming by PR). The SQL tools stay untagged on purpose: `chart` takes SQL
+vocabulary. `geojson.PlaceFeature` (in `geo_tools.py`) and `image.JpegBase64`
+(in `naip-imagery`) are minted locally, because the vocabulary has no kinds
+for them yet — kinds are plain strings, so producer and consumer agreeing on
+the text is the whole contract (worth upstreaming by PR). The image hop is
+where the state flow pays most: a 512px JPEG is ~100KB of base64 that never
+enters the chat model's context on its way to the vision model. The SQL tools stay untagged on purpose: `chart` takes SQL
 and re-runs it rather than consuming `query`'s captured `rows` from state, so
 no parameter here resolves them by kind.
 

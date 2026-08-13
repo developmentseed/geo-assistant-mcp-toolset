@@ -13,6 +13,7 @@ dependencies = [
     "mcp-toolsets-runtime[web]<0.6.0,>=0.5.0",
     "duckdb-analyst",
     "langchain-mistralai>=1.1.6",
+    "naip-imagery",
 ]
 
 [dependency-groups]
@@ -42,6 +43,7 @@ members = ["toolsets/*"]
 # third-party dependency.
 [tool.uv.sources]
 duckdb-analyst = { workspace = true }
+naip-imagery = { workspace = true }
 
 [tool.ruff]
 line-length = 88
@@ -65,5 +67,5 @@ warn_redundant_casts = true
 check_untyped_defs = true
 
 [[tool.mypy.overrides]]
-module = ["langchain_mcp_adapters.*"]
+module = ["langchain_mcp_adapters.*", "planetary_computer.*"]
 ignore_missing_imports = true
