@@ -50,7 +50,10 @@ the web client — each step in its own shell, left running:
    (the index root — an existing `.env` that says `.../mcp` finds no
    toolsets against `mcp-serve-local`). Then `./scripts/build-views` — the
    map, table and chart views render from these bundles, and
-   `mcp-serve-local` refuses to start without them.
+   `mcp-serve-local` refuses to start without them. For `interpret_image`
+   (naip-imagery), also `ollama signin && ollama pull gemma4:cloud` — the
+   default `OLLAMA_IMAGE_MODEL` is an Ollama **cloud** model, so this needs
+   no local GPU.
 
 2. **MCP: serve both toolsets.**
 
