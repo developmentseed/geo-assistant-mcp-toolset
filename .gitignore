@@ -23,6 +23,10 @@ public/elements/
 toolsets/*/ui/node_modules/
 toolsets/*/src/*/views/
 
+# Web chat client (Vite): node deps and build output
+web/node_modules/
+web/dist/
+
 # Tooling caches
 .mypy_cache/
 .pytest_cache/

@@ -5,8 +5,9 @@ first. This file holds only what an agent cannot derive from it.
 
 ## This repo owns no runtime code
 
-`mcp_runtime`, `mcp_cli`, `mcp_agent` and `mcp_toolset` come from the
-`mcp-toolsets-runtime` PyPI package, pinned in the root `pyproject.toml`. Never
+`mcp_runtime`, `mcp_cli`, `mcp_agent`, `mcp_agent_api` and `mcp_toolset` come
+from the `mcp-toolsets-runtime` PyPI package, pinned in the root
+`pyproject.toml`. Never
 add a module under those names here, and never patch runtime behaviour locally —
 fix it in
 [mcp-toolsets-runtime](https://github.com/developmentseed/mcp-toolsets-runtime),
@@ -24,7 +25,14 @@ release, then bump the pin. What this repo owns is `toolsets/`, `charts/`, the
   live at `<package>/views/*.html`, are git-ignored, and must exist before
   `mcp-serve` or `build_server` aborts — the Dockerfile's node stage, the CI
   `ui` job, and this script rebuild them.
-- Chainlit host element: `uv run mcp-agent install-elements` writes
+- Local chat: `uv run uvicorn mcp_agent_api.app:app --port 8765` (from the
+  repo root, so `.env` is found) plus `cd web && npm ci && npm run dev`, with
+  `mcp-serve-local` running and `MCP_URL=http://localhost:8000/` (index root,
+  not `/mcp`). `web/` is a copy of the runtime's `examples/agui-events/web`
+  with only branding edits — re-diff it against that example on runtime bumps,
+  and never upgrade its `@ag-ui/client` independently of the runtime.
+- Chainlit host element (legacy, deployed chat only until Chainlit is
+  retired): `uv run mcp-agent install-elements` writes
   `public/elements/McpView.jsx` from the runtime package. Git-ignored and not
   vendored — re-run it after a runtime bump, or views won't render in
   `mcp-agent-web` (it warns and starts anyway).

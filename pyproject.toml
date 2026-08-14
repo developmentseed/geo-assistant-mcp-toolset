@@ -6,13 +6,19 @@ readme = "README.md"
 requires-python = ">=3.12,<3.14"
 dependencies = [
     # The shared runtime, installed from PyPI — mcp_runtime (mcp-serve /
-    # mcp-index), mcp_cli, mcp_toolset, and with [web] the Chainlit chat host.
-    # [web] is here for the dev environment, which runs `mcp-agent-web` and
-    # `mcp-agent install-elements`; the toolset images sync with `--package` and
-    # so never see it. Upgrade by bumping this range and running `uv lock`.
-    "mcp-toolsets-runtime[web]<0.6.0,>=0.5.0",
+    # mcp-index), mcp_cli, mcp_toolset, with [web] the Chainlit chat host and
+    # with [api] the AG-UI HTTP agent (mcp_agent_api) behind the web/ client.
+    # Both extras are here for the dev environment, which runs `mcp-agent-web`,
+    # `mcp-agent install-elements` and `uvicorn mcp_agent_api.app:app`; the
+    # toolset images sync with `--package` and so never see them. Upgrade by
+    # bumping this range and running `uv lock`.
+    "mcp-toolsets-runtime[web,api]<0.6.0,>=0.5.6",
     "duckdb-analyst",
-    "langchain-mistralai>=1.1.6",
+    "langchain-mistralai<2.0.0,>=1.1.6",
+    # Serves mcp_agent_api locally. Not part of the runtime's [api] extra, and
+    # only transitively present via chainlit — declared so Chainlit retirement
+    # cannot take it away.
+    "uvicorn<0.53.0,>=0.52.3",
     "naip-imagery",
 ]
 

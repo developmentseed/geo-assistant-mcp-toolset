@@ -1,0 +1,443 @@
+:root {
+  --ink: #16181d;
+  --dim: #6b7280;
+  --line: #e3e6ea;
+  --paper: #fff;
+  --sunk: #f6f7f9;
+  --tool: #0e7490;
+  --activity: #a16207;
+  --bad: #b91c1c;
+  color-scheme: light dark;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --ink: #e6e8ec;
+    --dim: #8b94a3;
+    --line: #2a2e37;
+    --paper: #14161a;
+    --sunk: #1b1e24;
+    --tool: #67e8f9;
+    --activity: #fcd34d;
+    --bad: #fca5a5;
+  }
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: var(--paper);
+  color: var(--ink);
+  font: 15px/1.55 ui-sans-serif, system-ui, sans-serif;
+}
+
+code,
+pre {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 13px;
+}
+
+main {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 20rem;
+  height: 100vh;
+  height: 100dvh;
+  /* Nothing here scrolls the page: each column owns its own scrolling, so the
+     composer and the state panel stay put. `dvh` because a mobile address bar
+     makes `vh` taller than the viewport actually is. */
+  overflow: hidden;
+}
+
+/* The value panel is a third column rather than an overlay: it is read
+   against the key list it came from, so covering that would be backwards. */
+main.opened {
+  grid-template-columns: minmax(0, 1fr) 20rem minmax(0, 26rem);
+}
+
+main.folded {
+  grid-template-columns: minmax(0, 1fr) 20rem 2.25rem;
+}
+
+/* Stacked, and each row capped so the panels scroll inside themselves here
+   too — `auto` rows would let the state panel push the composer off. */
+@media (max-width: 50rem) {
+  main,
+  main.opened,
+  main.folded {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: minmax(0, 1fr) minmax(0, 35dvh) minmax(0, 35dvh);
+  }
+}
+
+/* `min-height: 0` is what makes `.log` the scroll container rather than the
+   page. A grid item's minimum is `auto`, so without it a long conversation
+   stretches this column past the 100dvh row: the page grows a scrollbar, the
+   composer scrolls off the bottom, and `.log` never overflows — which also
+   silently defeats scrolling it to a turn. Same for the two panels beside it. */
+.chat {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+}
+
+header {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  padding: 0.75rem 1.25rem;
+  border-bottom: 1px solid var(--line);
+}
+
+.log {
+  flex: 1;
+  overflow-y: auto;
+  /* The offset parent for a message, so scrolling to a turn is arithmetic
+     rather than scrollIntoView walking every ancestor. */
+  position: relative;
+  padding: 1.25rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+}
+
+.dim {
+  color: var(--dim);
+}
+
+.said {
+  margin: 0;
+  max-width: 44rem;
+}
+
+.said.user {
+  align-self: flex-end;
+  background: var(--sunk);
+  border-radius: 0.9rem;
+  padding: 0.4rem 0.8rem;
+}
+
+.caret {
+  display: inline-block;
+  width: 0.5rem;
+  height: 1rem;
+  margin-left: 2px;
+  vertical-align: text-bottom;
+  background: currentColor;
+  animation: blink 1s steps(2) infinite;
+}
+
+@keyframes blink {
+  50% {
+    opacity: 0;
+  }
+}
+
+.tool,
+.activity {
+  border-left: 2px solid var(--tool);
+  padding-left: 0.7rem;
+  overflow-wrap: anywhere;
+  font-size: 13px;
+}
+
+.activity {
+  border-left-color: var(--activity);
+}
+
+summary {
+  cursor: pointer;
+  list-style: none;
+  user-select: none;
+}
+
+/* The marker is drawn rather than inherited: Safari and Firefox disagree on
+   ::marker in a summary, and it has to line up with the rule on the left. */
+summary::-webkit-details-marker {
+  display: none;
+}
+
+summary::before {
+  content: "▸";
+  display: inline-block;
+  width: 1em;
+  color: var(--dim);
+  transition: transform 0.12s;
+}
+
+details[open] > summary::before {
+  transform: rotate(90deg);
+}
+
+.tool code {
+  color: var(--tool);
+}
+
+.activity em {
+  color: var(--activity);
+  font-style: normal;
+  font-weight: 600;
+}
+
+details > *:not(summary) {
+  display: block;
+  margin: 0.4rem 0 0 1em;
+}
+
+details pre {
+  max-height: 18rem;
+  overflow: auto;
+  font-size: 12px;
+}
+
+.view {
+  width: 100%;
+  height: 15rem;
+  border: 1px solid var(--line);
+  border-radius: 0.5rem;
+  background: var(--paper);
+}
+
+/* Named for what it is, not `.key` — the state panel's buttons already own
+   that class and are a column. */
+.legend {
+  display: flex;
+  align-items: center;
+  flex-wrap: nowrap;
+  white-space: nowrap;
+  gap: 0.35rem;
+  font-size: 12px;
+  color: var(--dim);
+}
+
+/* Matches the rule down the left of a tool call or an activity, so the key
+   reads as the same mark rather than a second encoding of it. */
+.swatch {
+  width: 2px;
+  height: 0.9em;
+  margin-left: 0.5rem;
+  background: var(--tool);
+}
+
+.swatch.activity {
+  background: var(--activity);
+}
+
+/* The answer is markdown, so it arrives as block elements rather than one
+   string. Collapse their margins so a reply is a paragraph, not a document. */
+.said > div > :first-child {
+  margin-top: 0;
+}
+
+.said > div > :last-child {
+  margin-bottom: 0;
+}
+
+.said ul,
+.said ol {
+  padding-left: 1.2rem;
+}
+
+.said pre {
+  background: var(--sunk);
+  border: 1px solid var(--line);
+  border-radius: 0.5rem;
+  padding: 0.7rem;
+  overflow-x: auto;
+}
+
+.said table {
+  border-collapse: collapse;
+}
+
+.said th,
+.said td {
+  border: 1px solid var(--line);
+  padding: 0.2rem 0.5rem;
+  text-align: left;
+}
+
+.error {
+  margin: 0.6rem 0.75rem;
+  color: var(--bad);
+  font-size: 13px;
+}
+
+form {
+  display: flex;
+  gap: 0.5rem;
+  padding: 0.9rem 1.25rem;
+  border-top: 1px solid var(--line);
+}
+
+input {
+  flex: 1;
+  padding: 0.55rem 0.8rem;
+  border: 1px solid var(--line);
+  border-radius: 0.5rem;
+  background: var(--paper);
+  color: inherit;
+  font: inherit;
+}
+
+button {
+  padding: 0.55rem 1rem;
+  border: 1px solid var(--line);
+  border-radius: 0.5rem;
+  background: var(--sunk);
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+
+button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+aside {
+  border-left: 1px solid var(--line);
+  padding: 1.25rem;
+  overflow-y: auto;
+  min-height: 0;
+  background: var(--sunk);
+}
+
+aside h2 {
+  margin: 0 0 0.5rem;
+  font-size: 13px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+aside p {
+  font-size: 13px;
+}
+
+.key {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  width: 100%;
+  text-align: left;
+  background: var(--paper);
+  overflow-wrap: anywhere;
+}
+
+/* --- turns ---------------------------------------------------------------
+   State is cumulative, so a turn is a position in it. The selector rewinds
+   the panel; it does not filter it. */
+
+.turns {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem;
+  margin-bottom: 0.4rem;
+}
+
+.turn {
+  min-width: 1.9rem;
+  padding: 0.15rem 0.4rem;
+  font-size: 12px;
+  line-height: 1.3;
+}
+
+.turn.on {
+  background: var(--activity);
+  border-color: var(--activity);
+  color: var(--paper);
+  font-weight: 600;
+}
+
+.asked {
+  margin: 0 0 0.75rem;
+  font-size: 12px;
+  font-style: italic;
+  overflow-wrap: anywhere;
+}
+
+.slot {
+  margin-bottom: 0.5rem;
+  border-left: 2px solid transparent;
+  padding-left: 0.4rem;
+  transition: border-color 0.1s;
+}
+
+/* Both ends of a hover carry the same mark, so the link reads as one thing
+   rather than two coincidences. */
+.slot.lit {
+  border-left-color: var(--activity);
+}
+
+.tool.lit,
+.activity.lit {
+  background: var(--sunk);
+  border-left-width: 3px;
+}
+
+/* Marks a key this turn wrote, against the ones it inherited. */
+.new {
+  margin-right: 0.3rem;
+  padding: 0 0.25rem;
+  border-radius: 0.2rem;
+  background: var(--activity);
+  color: var(--paper);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  vertical-align: 1px;
+}
+
+/* --- the value panel ----------------------------------------------------- */
+
+.value {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  border-left: 1px solid var(--line);
+  background: var(--paper);
+  overflow: hidden;
+}
+
+.value header {
+  gap: 0.5rem;
+  padding: 0.75rem;
+}
+
+.value header code {
+  flex: 1;
+  overflow-wrap: anywhere;
+}
+
+.value p {
+  margin: 0 0.75rem;
+  font-size: 12px;
+}
+
+/* The whole value, never truncated — that is the point of the panel. */
+.value pre {
+  flex: 1;
+  margin: 0.6rem 0.75rem 0.75rem;
+  overflow: auto;
+  font-size: 12px;
+  white-space: pre;
+}
+
+.fold {
+  padding: 0.1rem 0.45rem;
+  line-height: 1.2;
+}
+
+pre {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  background: var(--paper);
+  border: 1px solid var(--line);
+  border-radius: 0.5rem;
+  padding: 0.7rem;
+}

@@ -209,6 +209,11 @@ uv run mcp-cli call hello name=dev --url http://localhost:8000/hello/mcp
 uv run mcp-cli repl --url http://localhost:8000/hello/mcp
 uv run mcp-cli call whoami \
   --url http://localhost:8000/credential-demo/mcp -H "X-Demo-Token: s3cret"
+
+# Chat with the toolsets in a browser (two more shells; needs .env and
+# ./scripts/build-views — see "Chat over HTTP")
+uv run uvicorn mcp_agent_api.app:app --port 8765
+cd web && npm ci && npm run dev
 ```
 
 `mcp-serve-local` mounts each toolset at `/<name>/mcp` and serves the index
@@ -413,6 +418,62 @@ Re-run it after a runtime upgrade to pick up the new element. Nothing is written
 at runtime, so this works on a read-only filesystem; `mcp-agent-web` starts
 without it but warns and won't render views.
 
+> **Status**: Chainlit is now the legacy local chat surface. For local
+> development, use the agent API and the `web/` client — see
+> [Chat over HTTP](#chat-over-http-the-agent-api-and-the-web-client). This
+> section stays until the hosted Chainlit chat is retired.
+
+## Chat over HTTP: the agent API and the web client
+
+The runtime ≥ 0.5.4 serves the same agent as an HTTP API: `mcp_agent_api` is a
+FastAPI app that streams each turn as [AG-UI](https://docs.ag-ui.com/) SSE
+events. `web/` is the matching browser client — a React app copied from the
+runtime's `examples/agui-events/web/` (the runtime does not ship it as a
+package) and adapted for this repo. Re-diff `web/` against that example on
+runtime bumps.
+
+The API has five routes:
+
+| Route | Purpose |
+| --- | --- |
+| `POST /runs` | Run one turn; the response streams AG-UI events. |
+| `GET /threads/{id}` | The transcript and state metadata of a thread. |
+| `GET /threads/{id}/turns` | The turns of a thread, with per-turn state. |
+| `GET /threads/{id}/state/{key}` | One state value; `?turn=N` reads it as of turn N. |
+| `GET /views/{toolset}/{view}` | The HTML bundle of a `ui://` view. |
+
+See the runtime's [CONSUMING.md][consuming] §"Serving the agent over HTTP" for
+the full contract.
+
+To run it locally:
+
+1. Copy `.example.env` to `.env` and set `PROVIDER_MODEL`, `PROVIDER_API_KEY`
+   and `MCP_URL=http://localhost:8000/` (the index root — an existing `.env`
+   that says `.../mcp` finds no toolsets against `mcp-serve-local`).
+2. Build the view bundles once: `./scripts/build-views`. The map, table, chart
+   and image views render through `GET /api/views/…`, and `mcp-serve-local`
+   refuses to start without the bundles.
+3. Start three processes:
+
+   ```sh
+   uv run mcp-serve-local                            # terminal 1: toolsets on :8000
+   uv run uvicorn mcp_agent_api.app:app --port 8765  # terminal 2: agent API (repo root)
+   cd web && npm ci && npm run dev                   # terminal 3: client on :5173
+   ```
+
+Open http://localhost:5173. The Vite dev server proxies `/api` to the agent
+API, so the browser talks to one origin and no CORS configuration is needed.
+Start uvicorn from the repo root: the settings read `.env` relative to the
+working directory, and a missing `PROVIDER_MODEL` stops the process at startup
+by design.
+
+Two caveats. Threads are checkpointed in the API process's memory by default,
+so a restart loses them (set `MCP_AGENT_CHECKPOINT` to a PostgreSQL URL to
+keep them). And a thread id is the only credential on the read routes — treat
+thread ids as secrets, and put auth in front of the API before exposing it.
+
+[consuming]: https://github.com/developmentseed/mcp-toolsets-runtime/blob/main/docs/CONSUMING.md
+
 ## Removing a toolset
 
 ```sh
@@ -473,6 +534,11 @@ Build an image locally with `docker build --build-arg TOOLSET=hello .`.
   a TLS cert (`<namespace>-chat-tls`, issued by cert-manager if configured).
 
 ## Hosted chat (bring your own model)
+
+> **Status**: the hosted chat still deploys the Chainlit UI. Locally, the chat
+> surface is now the agent API and the `web/` client — see
+> [Chat over HTTP](#chat-over-http-the-agent-api-and-the-web-client). A later
+> change replaces this deployment with the API and client.
 
 The runtime's `mcp_agent` Chainlit UI can also run as a public web app over the
 deployed toolsets, at `chat.<shared-domain>`. It is **bring-your-own-model**:
@@ -744,6 +810,10 @@ The root `pyproject.toml` defines the uv workspace (`toolsets/*`), the
 `mcp-toolsets-runtime` pin, shared tool configuration and the dependency
 groups; `uv.lock` pins the runtime and the whole workspace consistently, and is
 what the images build from.
+
+`web/` (the chat client) and the toolset `ui/` directories need Node — Vite 7
+wants ≥ 22.12 (or 20.19). `web/` is outside the Python workspace and outside
+`scripts/lint`; `npm run build` in it typechecks and bundles.
 
 `tests/` holds only the toolset contract sweep — every directory under
 `toolsets/` must import, export a non-empty `TOOLS`, and satisfy the same
