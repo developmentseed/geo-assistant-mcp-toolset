@@ -52,30 +52,93 @@ protect this connection from a hostile ``SELECT``:
    this one.
 3. ``SET lock_configuration = true`` is set last, after every setting above,
    so no runtime SQL — even something that slips past ``security.py``'s
-   statement-shape filter — can loosen any of it. ``SET
-   allow_community_extensions = false`` runs first, before any ``INSTALL``:
-   this toolset needs only core extensions (``httpfs``, ``spatial``), so
-   community extensions are refused outright rather than allowed once and
-   then closed off.
+   statement-shape filter — can loosen any of it. ``allow_community_extensions``
+   is DuckDB's own all-or-nothing switch (no per-extension allowlist exists —
+   verified against DuckDB's docs, not assumed) so it must be enabled for
+   ``INSTALL zarr FROM community`` to succeed at all; it is closed with
+   ``SET allow_community_extensions = false`` immediately after that one
+   ``INSTALL``, before ``lock_configuration``, so nothing later in this
+   function — and nothing caller SQL could ever reach, see layer 4 below —
+   can install a *different* community extension. In effect this preserves
+   the original intent ("this toolset needs only named extensions, nothing
+   else") even though the flag itself can't express "just this one".
+   ``allow_community_extensions`` also can't be flipped *on* with ``SET`` at
+   all — DuckDB rejects that unconditionally, even on a connection that has
+   run no other statement yet ("Cannot change ... while database is
+   running") — so it's passed as ``config=`` to ``duckdb.connect()``
+   instead; verified empirically against this toolset's pinned version,
+   since this isn't documented behavior either.
 4. ``security.validate_select_only`` (defense-in-depth, checked before any
    caller SQL reaches this connection): single-statement, ``SELECT``/``WITH``
    only, plus a small denylist for introspection functions
    (``duckdb_secrets()`` etc.) that are otherwise valid inside a plain
    ``SELECT``. This does **not** stop ``read_text('/etc/passwd')`` — that
    starts with ``SELECT`` and is one statement, so it sails through this
-   check. It's stopped by layer 2 (and, ultimately, guaranteed by layer 1).
+   check. It's stopped by layer 2 (and, ultimately, guaranteed by layer 1)
+   — with one deliberate exception, see "Zarr" below.
 
-Extensions are pinned by name (``httpfs``, ``spatial``) — nothing under
-``duckdb-analyst`` ever calls ``INSTALL``/``LOAD`` again after connection
-setup, and layer 3 makes sure caller SQL couldn't anyway. Both are core
-DuckDB extensions, so their versions are pinned transitively by this
-toolset's pinned ``duckdb`` dependency. No community extension is used, so
-there is no unpinnable dependency here.
+Extensions are pinned by name (``httpfs``, ``spatial``, ``zarr``) — nothing
+under ``duckdb-analyst`` ever calls ``INSTALL``/``LOAD`` again after
+connection setup, and layer 3 makes sure caller SQL couldn't anyway.
+``httpfs``/``spatial`` are core DuckDB extensions, so their versions are
+pinned transitively by this toolset's pinned ``duckdb`` dependency. ``zarr``
+is a community extension (see "Zarr" below): unlike the core two, DuckDB's
+community extension repository has no version-pinning mechanism this
+toolset's tooling can reach for it, so its version floats with whatever
+build the community repository currently serves for this toolset's pinned
+DuckDB version+platform — a real, accepted exception to the "no unpinnable
+dependency" property the two core extensions have.
+
+ZARR — a documented exception to layer 2, not covered by it:
+
+``zarr`` (https://duckdb.org/community_extensions/extensions/duckdb_zarr,
+source at https://github.com/xqlsystems/duckdb-zarr — the catalog page's
+linked upstream, ``wayscience/duckdb_zarr``, is archived; the extension
+actually installs under the name ``zarr``, not ``duckdb_zarr``, and its
+functions are ``read_zarr``/``read_zarr_groups``/``read_zarr_metadata``, not
+the ``zarr()``/``zarr_groups()`` etc. some docs pages advertise — verified
+by installing it and inspecting ``duckdb_functions()`` directly, not by
+trusting those pages) reads Zarr array stores over ``http(s)://``/``s3://``
+or from local disk.
+
+Unlike ``httpfs``/``spatial``, it does its own native file I/O rather than
+going through DuckDB's registered filesystem abstraction — verified
+empirically: a local Zarr store built in this toolset's dev environment
+stayed fully readable through ``read_zarr_groups``/``read_zarr_metadata``
+*after* ``disabled_filesystems = 'LocalFileSystem'`` was set exactly as
+below, and pointing it at an arbitrary local path (e.g. ``/etc/passwd``)
+raised a raw OS error (``Not a directory (os error 20)``), not DuckDB's
+filesystem-disabled error — proof it reached the real filesystem directly.
+There is no extension-level setting that gates this either (checked
+``duckdb_settings()``). The same is true of DuckDB's httpfs warmup quirk in
+the opposite direction: a *cold* ``zarr`` remote read worked fine
+immediately after lockdown with no warmup at all, unlike ``spatial``'s
+``ST_Read`` — consistent with ``zarr`` not sharing DuckDB's httpfs code path
+either way, for local or remote.
+
+DuckDB also silently rewrites a bare ``FROM '<path>.zarr'`` into
+``read_zarr('<path>.zarr')`` (a "replacement scan"; local paths are only
+claimed if ``<path>/zarr.json`` or ``<path>/.zgroup`` actually exists — see
+the source linked above) — so this isn't limited to explicit
+``read_zarr(...)`` calls either.
+
+Because none of that is stoppable at the DuckDB-configuration layer,
+``security._validate_zarr_calls`` is this toolset's actual control here: it
+requires every ``read_zarr*`` call's first argument, and every
+``'...zarr'``/``'...zarr/'`` string literal anywhere in caller SQL, to be a
+literal ``http(s)://``/``s3://``/``gs://``/``az://`` URL, checked before
+layer 2 or layer 3 would ever come into play. Like the rest of
+``security.py`` this is shallow and syntax-level (string concatenation or
+other SQL-level construction of the literal can defeat it) — so this
+toolset's actual guarantee against a local read through ``zarr`` rests on
+layer 1 (no local secrets reachable) exactly as it already does for
+``read_text``/``read_csv``-style risk, not on a technical block the way
+layer 2 is a real, verified control for ``httpfs``/``spatial``.
 
 SCOPE — what this toolset is for:
 
 Small, fast datasets read over the network, plus ad hoc ``https://``/
-``s3://`` parquet and CSV URLs. The curated views are deliberately
+``s3://`` parquet, CSV and Zarr URLs. The curated views are deliberately
 lightweight (Natural Earth 1:110m, a few hundred KB each), so a full
 ``GROUP BY`` over one of them returns in well under a second.
 
@@ -189,18 +252,25 @@ def _build_connection() -> duckdb.DuckDBPyConnection:
         _THREADS,
         _OVERTURE_RELEASE,
     )
-    con = duckdb.connect(":memory:")
+    # allow_community_extensions can only be enabled via config= at connect
+    # time, never with a later SET — see the module docstring, layer 3, for
+    # why (verified empirically; not documented DuckDB behavior).
+    con = duckdb.connect(":memory:", config={"allow_community_extensions": "true"})
     con.execute(f"SET memory_limit = '{_MEMORY_LIMIT}'")
     con.execute(f"SET threads = {_THREADS}")
 
-    # Core extensions only, and community extensions refused before the first
-    # INSTALL — see the module docstring, layer "Extensions".
-    logger.debug("installing and loading extensions: httpfs, spatial")
-    con.execute("SET allow_community_extensions = false")
+    # httpfs/spatial are core extensions; zarr is the one named community
+    # extension this toolset uses (see the module docstring's "Zarr"
+    # section for what it is and its security caveat). Community extensions
+    # are closed off again right after this INSTALL — see layer 3.
+    logger.debug("installing and loading extensions: httpfs, spatial, zarr")
     con.execute("INSTALL httpfs")
     con.execute("LOAD httpfs")
     con.execute("INSTALL spatial")
     con.execute("LOAD spatial")
+    con.execute("INSTALL zarr FROM community")
+    con.execute("LOAD zarr")
+    con.execute("SET allow_community_extensions = false")
 
     # Default region for ad hoc `s3://` reads. Public/anonymous buckets need
     # no credentials, just a region. NOTE: `lock_configuration` below means a

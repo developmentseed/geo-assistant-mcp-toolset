@@ -177,6 +177,28 @@ async def test_query_against_ad_hoc_public_parquet_url():
     assert len(result["rows"]) > 0
 
 
+async def test_query_against_ad_hoc_public_zarr_url():
+    """Same shape as the parquet/CSV ad hoc URL support, for `zarr`.
+
+    The URL is the `duckdb-zarr` project's own README example (a small,
+    consolidated-metadata GPCP store) — chosen the same way the parquet
+    fixture above was, for a small stable public dataset.
+    """
+    result = await query.ainvoke(
+        {
+            "sql": (
+                "SELECT name, dtype FROM read_zarr_metadata("
+                "'https://ncsa.osn.xsede.org/Pangeo/pangeo-forge/"
+                "gpcp-feedstock/gpcp.zarr')"
+            ),
+            "limit": 3,
+        }
+    )
+    assert not is_error(result)
+    assert len(result["rows"]) > 0
+    assert result["rows"][0]["name"]
+
+
 async def test_query_enforces_hard_row_cap_server_side():
     result = await query.ainvoke(
         {
@@ -257,6 +279,34 @@ async def test_rejects_pragma():
 
 async def test_rejects_duckdb_secrets():
     result = await query.ainvoke({"sql": "SELECT * FROM duckdb_secrets()"})
+    assert is_error(result)
+
+
+async def test_rejects_local_zarr_read_via_explicit_call():
+    """`zarr`'s functions bypass `disabled_filesystems` entirely (see
+    connection.py's "Zarr" section) — `security._validate_zarr_calls` is the
+    only thing standing between this and the pod's local filesystem.
+    """
+    result = await query.ainvoke(
+        {"sql": "SELECT * FROM read_zarr_groups('/etc/passwd')"}
+    )
+    assert is_error(result)
+
+
+async def test_rejects_local_zarr_read_via_bare_replacement_scan_path():
+    """DuckDB rewrites a bare `'...zarr'` literal into `read_zarr(...)`
+    itself (see connection.py), so this must be caught even with no
+    `read_zarr` call anywhere in the caller's SQL.
+    """
+    result = await query.ainvoke({"sql": "SELECT * FROM '/etc/passwd.zarr'"})
+    assert is_error(result)
+
+
+async def test_rejects_zarr_call_with_non_literal_argument():
+    """A non-literal first argument can't be statically verified, so it must
+    fail closed rather than be let through.
+    """
+    result = await query.ainvoke({"sql": "SELECT * FROM read_zarr_groups(NULL)"})
     assert is_error(result)
 
 
