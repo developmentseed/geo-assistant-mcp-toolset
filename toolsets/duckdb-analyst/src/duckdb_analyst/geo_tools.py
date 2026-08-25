@@ -1,12 +1,14 @@
-"""The geo-assistant workflow, as kind-tagged tools over Overture places.
+"""The geo-assistant workflow, as tools whose state flows through session state.
 
 Three tools ported from geo-assistant's LangGraph agent, whose state flow
 (place → search area → places within it) maps directly onto session state:
-``get_place`` publishes the matched place feature, ``get_search_area``
-consumes it and publishes an area of interest, ``places_within_area``
-consumes that area. Each hop is a ``Kind`` tag, so the geometries move
-between tools through state with a receipt, never through the model — see
-the runtime's SESSION-STATE.md for the contract.
+``get_place`` publishes the matched place feature (its ``place`` result key),
+``get_search_area`` takes it as a ``NotAuthored`` parameter and publishes an
+area of interest (``search_area``), ``places_within_area`` takes that area the
+same way. Each hop is a data key a model reads off a ``[state updated: ...]``
+breadcrumb and passes back as ``@state:<key>``, so the geometries move between
+tools through state, never through the model — see the runtime's
+SESSION-STATE.md for the contract.
 
 These tools query the same locked-down connection as ``tools.py``, but their
 SQL is code-authored and parameter-bound, never caller text, so they skip
@@ -24,21 +26,13 @@ from pyproj import Transformer
 from shapely.geometry import mapping, shape
 from shapely.ops import transform, unary_union
 
-from mcp_runtime.declarations import Kind
-from mcp_runtime.kinds import GEOJSON_AREA_OF_INTEREST
+from mcp_runtime.declarations import NotAuthored
 from mcp_runtime.tool_result import ToolError, ToolResult
 
 from duckdb_analyst.connection import execute_capped
 from duckdb_analyst.security import LOOKUP_TIMEOUT_SECONDS
 
 logger = logging.getLogger(__name__)
-
-#: A single GeoJSON Feature for one named place (a POI, not an area). Minted
-#: here because the runtime's vocabulary has no kind for it yet — kinds are
-#: just strings, so producer and consumer agreeing on this text is the whole
-#: contract. Worth upstreaming into ``mcp_runtime.kinds`` by PR so other
-#: toolsets can interoperate with it.
-GEOJSON_PLACE_FEATURE = "geojson.PlaceFeature"
 
 #: Fuzzy-match floor for ``get_place``. Probed against the 2026-07-22.0
 #: release: real matches ("Time Out Market" → "Time Out Market Lisboa")
@@ -59,13 +53,13 @@ _PLACES_IN_AREA_LIMIT = 100
 class GetPlaceResult(ToolResult):
     """The best-matching Overture place, published for downstream tools."""
 
-    place: NotRequired[Annotated[dict, Kind(GEOJSON_PLACE_FEATURE)]]
+    place: NotRequired[dict]
 
 
 class SearchAreaResult(ToolResult):
     """A buffered area of interest around a previously found place."""
 
-    search_area: NotRequired[Annotated[dict, Kind(GEOJSON_AREA_OF_INTEREST)]]
+    search_area: NotRequired[dict]
 
 
 class PlacesWithinAreaResult(ToolResult):
@@ -212,7 +206,7 @@ async def get_place(
 
 @tool
 def get_search_area(
-    buffer_km: float, place: Annotated[dict, Kind(GEOJSON_PLACE_FEATURE)]
+    buffer_km: float, place: Annotated[dict, NotAuthored()]
 ) -> SearchAreaResult | ToolError:
     """Buffer the previously found place by a radius in km, publishing the
     result as the area of interest for `places_within_area` (or any other
@@ -277,7 +271,7 @@ def get_search_area(
 @tool
 async def places_within_area(
     category: str,
-    area: Annotated[dict, Kind(GEOJSON_AREA_OF_INTEREST)],
+    area: Annotated[dict, NotAuthored()],
     limit: int = 10,
 ) -> PlacesWithinAreaResult | ToolError:
     """List Overture places of one category (e.g. 'restaurant', 'cafe',

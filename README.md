@@ -65,8 +65,12 @@ the web client — each step in its own shell, left running:
    the repo root, so `.env` is found:
 
    ```sh
-   uv run uvicorn mcp_agent_api.app:app --port 8765
+   uv run uvicorn agent_app:app --port 8765
    ```
+
+   `agent_app:app` — not the runtime's own `mcp_agent_api.app:app` — is this
+   repo's system prompt wrapper; see [Chat over
+   HTTP](#chat-over-http-the-agent-api-and-the-web-client) below.
 
 4. **Web client: the chat UI.**
 
@@ -110,13 +114,19 @@ notebooks or an agent repo.
 ## Chat over HTTP: the agent API and the web client
 
 `mcp_agent_api` is a FastAPI app (from the runtime) that streams each turn as
-[AG-UI](https://docs.ag-ui.com/) SSE events. `web/` is the matching browser
-client — a React app copied from the runtime's `examples/agui-events/web/`
-(the runtime does not ship it as a package) and adapted for this repo.
-Re-diff `web/` against that example on runtime bumps. The three-step run
-order is [above](#run-it); a missing `PROVIDER_MODEL` stops the API at
-startup by design, and the Vite dev server proxies `/api` to it so the
-browser talks to one origin and no CORS configuration is needed.
+[AG-UI](https://docs.ag-ui.com/) SSE events. `agent_app.py` (this repo's own,
+not the runtime's) wraps it with `create_app`'s documented `build=` seam to
+add a data-grounding rule to the system prompt — the runtime's default only
+says to use tools "whenever they can ground your answer," which does not stop
+the model answering a data question (a place, a count, what an image shows)
+from its own training data instead of a tool result. Run it with
+`uv run uvicorn agent_app:app`, not `mcp_agent_api.app:app` directly. `web/`
+is the matching browser client — a React app copied from the runtime's
+`examples/agui-events/web/` (the runtime does not ship it as a package) and
+adapted for this repo. Re-diff `web/` against that example on runtime bumps.
+The three-step run order is [above](#run-it); a missing `PROVIDER_MODEL` stops
+the API at startup by design, and the Vite dev server proxies `/api` to it so
+the browser talks to one origin and no CORS configuration is needed.
 
 The API has five routes:
 
@@ -147,39 +157,46 @@ moves off it.
 ## How the tools compose (session state)
 
 Large values — geometries, images — pass between tools through **session
-state** instead of through the model's context: a producing tool tags a
-result key with a `Kind`, and the runtime fills the consuming tool's
-parameter from state by that kind. The parameter leaves the model's schema
-entirely, so it can't be hallucinated because it is never offered. This is
-the ported geo-assistant flow, spanning both toolsets:
+state** instead of through the model's context: every `ToolResult` data key a
+tool returns is captured under a `<toolset>/<tool>/<field>` state key, and a
+parameter tagged `NotAuthored` accepts only an `@state:<key>` handle to one —
+never a model-written literal. The model reads which keys exist off a
+`[state updated: ...]` breadcrumb and passes the handle back; the client
+substitutes the real value on the way to the server, so it can't be
+hallucinated because it is never offered as a literal. This is the ported
+geo-assistant flow, spanning both toolsets:
 
-| Tool (toolset) | Consumes (parameter) | Publishes (result key) |
+| Tool (toolset) | Consumes (parameter) | Publishes (state key) |
 | --- | --- | --- |
-| `get_place` (duckdb-analyst) | — | `place` · `geojson.PlaceFeature` |
-| `get_search_area` (duckdb-analyst) | `place` · `geojson.PlaceFeature` | `search_area` · `geojson.AreaOfInterest` |
-| `places_within_area` (duckdb-analyst) | `area` · `geojson.AreaOfInterest` | `places` · untagged |
-| `fetch_naip_image` (naip-imagery) | `area` · `geojson.AreaOfInterest` | `naip_image` · `image.JpegBase64` |
-| `interpret_image` (naip-imagery) | `image` · `image.JpegBase64` | — |
+| `get_place` (duckdb-analyst) | — | `duckdb-analyst/get_place/place` |
+| `get_search_area` (duckdb-analyst) | `place` (`NotAuthored`) | `duckdb-analyst/get_search_area/search_area` |
+| `places_within_area` (duckdb-analyst) | `area` (`NotAuthored`) | `duckdb-analyst/places_within_area/places` |
+| `fetch_naip_image` (naip-imagery) | `area` (`NotAuthored`) | `naip-imagery/fetch_naip_image/naip_image` |
+| `interpret_image` (naip-imagery) | `image` (`NotAuthored`) | — |
 
-`geojson.AreaOfInterest` comes from the runtime's `mcp_runtime.kinds`
-vocabulary. `geojson.PlaceFeature` and `image.JpegBase64` are minted locally
-(in `geo_tools.py` and `naip-imagery` respectively), because the vocabulary
-has no kinds for them yet — kinds are plain strings, so producer and
-consumer agreeing on the text is the whole contract. The image hop is where
-this pays most: a 512px JPEG is ~100KB of base64 that never enters the chat
-model's context on its way to the vision model.
+Nothing here names a shared vocabulary: a data key is a public name on its
+own, and `places_within_area`'s `area` parameter resolves to whichever tool
+last published one — `get_search_area` today, or any other tool's `area`-named
+key. The image hop is where the mechanism pays most: a 512px JPEG is ~100KB of
+base64 that never enters the chat model's context on its way to the vision
+model.
 
-The chat's tool step also shows a **receipt** where a filled parameter would
-have been, naming the key, the kind and the publishing tool:
+The producing call's result carries the breadcrumb the model reads:
 
 ```
-[state used: area ← duckdb-analyst/search_area, published by get_search_area]
+Search area created: 1.0 km around Time Out Market Lisboa.  [state updated: duckdb-analyst/get_search_area/search_area]
 ```
 
-Full mechanism (untagged keys, the `@state:<key>` handle form, the
-`state.produces` health field, what a tracing backend still sees) is in the
-runtime's [SESSION-STATE.md][session-state] — the table above is what's
-actually wired up here.
+and the next call passes the handle back explicitly:
+
+```
+places_within_area(category="cafe", area="@state:duckdb-analyst/get_search_area/search_area")
+```
+
+Full mechanism (the `state.produces`/`state.not_authored` health fields, the
+refusal a wrong or missing handle gets back, what a tracing backend still
+sees) is in the runtime's [SESSION-STATE.md][session-state] — the table above
+is what's actually wired up here.
 
 [session-state]: https://github.com/developmentseed/mcp-toolsets-runtime/blob/main/docs/SESSION-STATE.md
 
@@ -355,7 +372,10 @@ Bring-your-own-model like the API above: set `PROVIDER_MODEL` and
 written at runtime, so it works on a read-only filesystem, and
 `mcp-agent-web` starts without it but warns and won't render views. This
 surface is being retired in favour of the agent API and `web/` client, both
-locally and (eventually) in the hosted deployment.
+locally and (eventually) in the hosted deployment. It also does not get
+`agent_app.py`'s grounding rule: `mcp_agent.web` builds its agent internally,
+with no `system_prompt` seam a host can pass through — another reason to
+prefer the agent API above.
 
 ### Per-user credentials
 

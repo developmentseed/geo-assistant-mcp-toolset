@@ -4,4 +4,4 @@ set -e
 
 uv run ruff check --select S
 uv run ruff format --check
-uv run mypy tests toolsets
+uv run mypy tests toolsets agent_app.py

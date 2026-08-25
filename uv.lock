@@ -674,7 +674,7 @@ index = [
 requires-dist = [
     { name = "duckdb-analyst", editable = "toolsets/duckdb-analyst" },
     { name = "langchain-mistralai", specifier = ">=1.1.6,<2.0.0" },
-    { name = "mcp-toolsets-runtime", extras = ["web", "api"], specifier = ">=0.5.6,<0.6.0" },
+    { name = "mcp-toolsets-runtime", extras = ["web", "api"], specifier = ">=0.8.0,<0.9.0" },
     { name = "naip-imagery", editable = "toolsets/naip-imagery" },
     { name = "uvicorn", specifier = ">=0.52.3,<0.53.0" },
 ]
@@ -1224,7 +1224,7 @@ wheels = [
 
 [[package]]
 name = "mcp-toolsets-runtime"
-version = "0.5.6"
+version = "0.8.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "fastapi" },
@@ -1237,9 +1237,9 @@ dependencies = [
     { name = "typer" },
     { name = "typing-extensions" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/a9/54/10857387fca6847d4b49b3f1d28c9ceba5486b343021fe5e97d61397ec1a/mcp_toolsets_runtime-0.5.6.tar.gz", hash = "sha256:1b7cae607698e725b71e085158688f06f3b93f99a632026d0e7b3d2fe808d634", size = 560853, upload-time = "2026-08-13T12:29:41.741Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/37/fe/c9fb673a6bb13acebeafc4924747e4f2653be9d753e165f397cf49a8425b/mcp_toolsets_runtime-0.8.0.tar.gz", hash = "sha256:e44f9ef5b74612d81253f8ed63ff72ab658458f8d03dc4e25dddc915c2edaa8c", size = 580385, upload-time = "2026-08-25T08:30:18.231Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/72/e2/50e064c54e0bb761de62373e7163c6a9ca6d8994db192195280687975e54/mcp_toolsets_runtime-0.5.6-py3-none-any.whl", hash = "sha256:0c5aa493faf74c0d5ff2ee10ab13ccae70a0f7e3217af5c2f3888ce461744ce7", size = 117459, upload-time = "2026-08-13T12:29:40.491Z" },
+    { url = "https://files.pythonhosted.org/packages/19/66/4588b8be6dcac4e4b7e7b5e2d8ba1bd853be66b39ab5a74f60a173757387/mcp_toolsets_runtime-0.8.0-py3-none-any.whl", hash = "sha256:ad837b07866f48e7e2ef5247618163265602239d66f399ba72cc4b8af4d52f01", size = 121125, upload-time = "2026-08-25T08:30:16.203Z" },
 ]
 
 [package.optional-dependencies]

@@ -7,19 +7,17 @@ thread once per session (the same state a warmed-up pod is in) and using
 neighborhood-scale bboxes: warm, `get_place` measured ~6s and
 `places_within_area` ~1s. The pure-computation buffer tool is tested offline.
 
-The kind-wiring test is the one to keep green above all: it pins the
+The state-wiring test is the one to keep green above all: it pins the
 provenance contract — geometries move between these tools through session
 state, never through the model — which is the reason this workflow exists.
 """
 
 import pytest
 
-from mcp_runtime.declarations import consumed_kinds, output_kinds
-from mcp_runtime.kinds import GEOJSON_AREA_OF_INTEREST
+from mcp_runtime.declarations import not_authored, output_fields
 from mcp_runtime.tool_result import is_error
 
 from duckdb_analyst.geo_tools import (
-    GEOJSON_PLACE_FEATURE,
     get_place,
     get_search_area,
     places_within_area,
@@ -51,19 +49,18 @@ def warm_footers():
 # ---------------------------------------------------------------------------
 
 
-def test_kind_wiring_forms_the_place_to_area_chain():
-    """get_place → get_search_area → places_within_area, linked by kinds.
+def test_state_wiring_forms_the_place_to_area_chain():
+    """get_place → get_search_area → places_within_area, linked by state.
 
     These assertions are what makes the geometries flow through session
-    state (FILL) instead of the model's context. Renaming a kind string or
-    dropping a tag silently degrades the chain to model-passed values, so
-    any change here must be deliberate.
+    state instead of the model's context. Dropping a `NotAuthored` tag or a
+    result field silently degrades the chain to model-passed values, so any
+    change here must be deliberate.
     """
-    assert output_kinds(get_place)["place"] == GEOJSON_PLACE_FEATURE
-    consumed = consumed_kinds(get_search_area)
-    assert consumed["place"].kind == GEOJSON_PLACE_FEATURE
-    assert output_kinds(get_search_area)["search_area"] == GEOJSON_AREA_OF_INTEREST
-    assert consumed_kinds(places_within_area)["area"].kind == GEOJSON_AREA_OF_INTEREST
+    assert "place" in output_fields(get_place)
+    assert not_authored(get_search_area) == ["place"]
+    assert "search_area" in output_fields(get_search_area)
+    assert not_authored(places_within_area) == ["area"]
 
 
 # ---------------------------------------------------------------------------

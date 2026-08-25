@@ -12,7 +12,10 @@ add a module under those names here, and never patch runtime behaviour locally �
 fix it in
 [mcp-toolsets-runtime](https://github.com/developmentseed/mcp-toolsets-runtime),
 release, then bump the pin. What this repo owns is `toolsets/`, `charts/`, the
-`Dockerfile`, the workflows and `tests/test_contract.py`.
+`Dockerfile`, the workflows, `tests/test_contract.py` and `agent_app.py` (a
+thin composition layer over `mcp_agent_api.app.create_app`'s documented
+`build=` seam — not a runtime patch, since it only calls the package's own
+public functions with this project's system prompt).
 
 ## Commands
 
@@ -25,10 +28,12 @@ release, then bump the pin. What this repo owns is `toolsets/`, `charts/`, the
   live at `<package>/views/*.html`, are git-ignored, and must exist before
   `mcp-serve` or `build_server` aborts — the Dockerfile's node stage, the CI
   `ui` job, and this script rebuild them.
-- Local chat: `uv run uvicorn mcp_agent_api.app:app --port 8765` (from the
-  repo root, so `.env` is found) plus `cd web && npm ci && npm run dev`, with
+- Local chat: `uv run uvicorn agent_app:app --port 8765` (from the repo root,
+  so `.env` is found) plus `cd web && npm ci && npm run dev`, with
   `mcp-serve-local` running and `MCP_URL=http://localhost:8000/` (index root,
-  not `/mcp`). `web/` is a copy of the runtime's `examples/agui-events/web`
+  not `/mcp`). `agent_app:app` (not `mcp_agent_api.app:app`) is this repo's
+  own thin wrapper adding a data-grounding rule to the system prompt — see
+  `agent_app.py`. `web/` is a copy of the runtime's `examples/agui-events/web`
   with only branding edits — re-diff it against that example on runtime bumps,
   and never upgrade its `@ag-ui/client` independently of the runtime.
 - Chainlit host element (legacy, deployed chat only until Chainlit is

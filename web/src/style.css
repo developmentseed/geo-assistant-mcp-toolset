@@ -31,7 +31,10 @@ body {
   margin: 0;
   background: var(--paper);
   color: var(--ink);
-  font: 15px/1.55 ui-sans-serif, system-ui, sans-serif;
+  font:
+    15px/1.55 ui-sans-serif,
+    system-ui,
+    sans-serif;
 }
 
 code,
@@ -182,6 +185,12 @@ details[open] > summary::before {
   font-weight: 600;
 }
 
+/* The tool an activity belongs to, in the colour of the call rather than of
+   the activity: it is a pointer at something blue, and reads as one. */
+.activity code {
+  color: var(--tool);
+}
+
 details > *:not(summary) {
   display: block;
   margin: 0.4rem 0 0 1em;
@@ -251,6 +260,12 @@ details pre {
 
 .said table {
   border-collapse: collapse;
+  /* A comparison table is wider than a chat column. Scroll it on its own,
+     like `pre` above, rather than letting it set the width of the page. */
+  display: block;
+  width: max-content;
+  max-width: 100%;
+  overflow-x: auto;
 }
 
 .said th,
@@ -317,14 +332,30 @@ aside p {
   font-size: 13px;
 }
 
+/* The card a stored value gets. It holds the button *and* the record of what
+   the producing call was given, so both read as one thing — the button alone
+   cannot, since the record contains buttons of its own. */
+.card {
+  border: 1px solid var(--line);
+  border-radius: 0.5rem;
+  background: var(--paper);
+  padding: 0.5rem 0.7rem;
+  overflow: hidden;
+}
+
 .key {
   display: flex;
   flex-direction: column;
   gap: 0.15rem;
   width: 100%;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: none;
   text-align: left;
-  background: var(--paper);
-  overflow-wrap: anywhere;
+  /* `break-word` rather than `anywhere`: a key carries <wbr> at its own
+     separators, and this is only the fallback for a segment too long to fit. */
+  overflow-wrap: break-word;
 }
 
 /* --- turns ---------------------------------------------------------------
@@ -376,6 +407,143 @@ aside p {
 .activity.lit {
   background: var(--sunk);
   border-left-width: 3px;
+}
+
+/* Where the call that produced a value got each of its arguments. Both halves
+   are here: the model's, and the keys it named — the second is what makes the
+   chain walkable from the panel, which is the surface a reader has left once
+   the call itself has scrolled away. */
+/* Says what the lines under a value are. Without it they read as more
+   attributes of the value, when they are the arguments of a different thing —
+   the call that produced it. Named for the wire field so a reader who opens
+   the state route recognises what they are looking at. */
+.inputs-label {
+  margin: 0.45rem 0 0.25rem;
+  padding: 0.4rem 0 0;
+  border-top: 1px solid var(--line);
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  color: var(--dim);
+}
+
+/* The tool keeps its own casing — it is an identifier, not a caption. */
+.inputs-label code {
+  font-size: 10px;
+  color: var(--ink);
+}
+
+.inputs {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  font-size: 11px;
+  line-height: 1.45;
+  color: var(--dim);
+}
+
+.inputs li + li {
+  margin-top: 0.25rem;
+}
+
+/* The parameter and the value are both monospace, so without a mark between
+   them `dataset_id chirps` reads as one token. `=` for what the model wrote,
+   `←` for what came from another key — two relations, told apart. */
+.rel {
+  color: var(--dim);
+}
+
+/* These are prose, not identifiers: let them wrap at spaces like prose.
+   `overflow-wrap` inherits, so a value's break-word would otherwise reach
+   them and split "written". */
+.inputs li {
+  overflow-wrap: normal;
+  word-break: normal;
+}
+
+.inputs code {
+  font-size: 11px;
+  overflow-wrap: break-word;
+}
+
+/* The parameter, against the origin beside it. */
+.param {
+  color: var(--ink);
+}
+
+/* The value the model wrote. Shown because "dataset_id written by the model"
+   leaves a reader to go hunting for the thing they were just warned about —
+   and set on a chip, because it sits beside a parameter in the same monospace
+   and would otherwise read as a continuation of the name. */
+.wrote {
+  padding: 0 0.25rem;
+  border-radius: 0.2rem;
+  background: var(--sunk);
+  font-size: 11px;
+  color: var(--ink);
+  overflow-wrap: break-word;
+}
+
+/* A value too long to sit on a line. The case worth seeing is the expensive
+   one, which is also the one that would fill the panel. */
+.folded {
+  display: inline;
+}
+
+.folded summary {
+  display: inline;
+  cursor: pointer;
+  list-style: none;
+}
+
+.folded summary::-webkit-details-marker {
+  display: none;
+}
+
+.folded summary::before {
+  content: "▸ ";
+  color: var(--dim);
+}
+
+.folded[open] summary::before {
+  content: "▾ ";
+}
+
+.folded pre {
+  margin: 0.3rem 0 0;
+  padding: 0.4rem 0.5rem;
+  max-height: 14rem;
+  overflow: auto;
+  border-radius: 0.3rem;
+  background: var(--sunk);
+  font-size: 10px;
+  line-height: 1.4;
+  white-space: pre-wrap;
+  overflow-wrap: break-word;
+}
+
+/* An argument the model wrote rather than one a tool supplied. Not an error —
+   a caveat, so it reads as one. */
+.authored {
+  color: var(--activity);
+}
+
+/* The key an argument came from: another row in this panel, one click away. */
+.from {
+  display: inline;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: none;
+  color: var(--tool);
+  cursor: pointer;
+  font: inherit;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  text-align: left;
+  overflow-wrap: break-word;
+}
+
+.from:hover {
+  text-decoration: underline;
 }
 
 /* Marks a key this turn wrote, against the ones it inherited. */
