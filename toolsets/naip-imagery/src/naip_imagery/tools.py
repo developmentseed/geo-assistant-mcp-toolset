@@ -1,14 +1,15 @@
-"""The geo-assistant NAIP imagery workflow, as kind-tagged tools.
+"""The geo-assistant NAIP imagery workflow, as tools over session state.
 
 Two tools ported from geo-assistant's LangGraph agent: ``fetch_naip_image``
 searches Microsoft Planetary Computer's STAC API for NAIP aerial imagery
 over the session's area of interest and renders an RGB JPEG server-side;
 ``interpret_image`` sends that JPEG to a local Ollama vision model and
-returns its description. The hops are ``Kind`` tags, so the area arrives
-from ``duckdb-analyst``'s ``get_search_area`` (or any tool publishing an
-area of interest) and the image moves between the two tools through session
-state — never through the chat model's context, which matters here more
-than for geometries: a 512px JPEG is ~100KB of base64.
+returns its description. Both take their input as a ``NotAuthored``
+parameter, so the area arrives from ``duckdb-analyst``'s ``get_search_area``
+(or any tool publishing an area of interest) and the image moves between the
+two tools through session state — never through the chat model's context,
+which matters here more than for geometries: a 512px JPEG is ~100KB of
+base64.
 
 The interpretation model is deliberately separate from the chat model: it is
 an Ollama endpoint (``OLLAMA_BASE_URL``, default localhost), so the localhost
@@ -47,18 +48,10 @@ from shapely.geometry import mapping, shape
 from shapely.geometry.base import BaseGeometry
 from shapely.ops import unary_union
 
-from mcp_runtime.declarations import Kind
-from mcp_runtime.kinds import GEOJSON_AREA_OF_INTEREST
+from mcp_runtime.declarations import NotAuthored
 from mcp_runtime.tool_result import ToolError, ToolResult
 
 logger = logging.getLogger(__name__)
-
-#: A base64-encoded JPEG with its provenance, shaped like ``NaipImage``.
-#: Minted here because the runtime's vocabulary has no kind for a rendered
-#: image yet — kinds are just strings, so producer and consumer agreeing on
-#: this text is the whole contract (worth upstreaming into
-#: ``mcp_runtime.kinds`` by PR, like ``geojson.PlaceFeature``).
-IMAGE_JPEG_BASE64 = "image.JpegBase64"
 
 STAC_URL = "https://planetarycomputer.microsoft.com/api/stac/v1"
 
@@ -101,7 +94,7 @@ class NaipImage(TypedDict):
 class FetchNaipImageResult(ToolResult):
     """The rendered NAIP JPEG, published for `interpret_image` and the view."""
 
-    naip_image: NotRequired[Annotated[NaipImage, Kind(IMAGE_JPEG_BASE64)]]
+    naip_image: NotRequired[NaipImage]
 
 
 class InterpretImageResult(ToolResult):
@@ -195,7 +188,7 @@ def _render_rgb_jpeg(
 async def fetch_naip_image(
     start_date: str,
     end_date: str,
-    area: Annotated[dict, Kind(GEOJSON_AREA_OF_INTEREST)],
+    area: Annotated[dict, NotAuthored()],
 ) -> FetchNaipImageResult | ToolError:
     """Fetch NAIP aerial imagery (USA only, ~1m resolution) over the current
     area of interest and render it as an RGB image.
@@ -288,7 +281,7 @@ async def fetch_naip_image(
 
 @tool
 async def interpret_image(
-    image: Annotated[dict, Kind(IMAGE_JPEG_BASE64)],
+    image: Annotated[dict, NotAuthored()],
     question: str = "Describe what you see in this aerial image.",
 ) -> InterpretImageResult | ToolError:
     """Describe the previously fetched aerial image with an Ollama-served

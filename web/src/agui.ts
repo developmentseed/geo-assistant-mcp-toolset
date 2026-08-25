@@ -8,17 +8,30 @@
 /** One session-state value, as the state route returns it. */
 export type StateValue = {
   key: string;
-  kind: string | null;
   tool?: string;
+  /** Where each argument of the producing call came from: another state key,
+   * or "model" for one the model wrote itself. */
+  inputs?: Record<string, string> | null;
   seq?: number | null;
   /** The turn it was read at, or `null` for "as state stands now". */
   turn: number | null;
   value: unknown;
 };
 
+/** What the stream says about one stored value, per key.
+ *
+ * Never the value: it is in session state because it was too big for the
+ * transcript. Enough to decide whether to fetch it from
+ * `GET /threads/{id}/state/{key}`.
+ */
+export type StateSummary = Record<
+  string,
+  { tool?: string; bytes?: number; inputs?: Record<string, string> }
+>;
+
 /** One session-state value in full — the payload the stream left out.
  *
- * `STATE_SNAPSHOT` carries `{kind, tool, bytes}` per key. This is the route a
+ * `STATE_SNAPSHOT` carries `{tool, bytes, inputs}` per key. This is the route a
  * client follows once it has decided it wants the 39 kB geometry, and it is
  * outside the AG-UI vocabulary entirely: the protocol has a state channel but
  * no notion of a value too large to put on it.
@@ -48,11 +61,31 @@ export async function readState(
   return (await response.json()) as StateValue;
 }
 
+/** A thread's messages, for a client that reloaded.
+ *
+ * The conversation, and nothing around it: receipts, views and the rest are
+ * activities, and the server does not rebuild past turns' activities. So a
+ * restored thread shows what was said but not where each tool's arguments came
+ * from — see the README.
+ */
+export async function readThread(threadId: string) {
+  const response = await fetch(`/api/threads/${threadId}`);
+  // 404 is the ordinary answer for a thread id that has never run, which is
+  // what a hand-edited URL produces. The caller starts fresh instead.
+  if (response.status === 404) return null;
+  if (!response.ok) throw new Error(`${response.status}`);
+  return (await response.json()) as {
+    threadId: string;
+    messages: { id: string; role: string; content?: string | null }[];
+    state: StateSummary;
+  };
+}
+
 /** A thread's turns, and what session state held at the end of each.
  *
- * Not used by the live client — it builds turns from the events as they
- * arrive — but this is how a client that reloaded would get them back, and it
- * is the route the panel's per-turn view is really made of.
+ * The live client builds turns from the events as they arrive; this is how one
+ * that reloaded gets them back, and it is the route the panel's per-turn view
+ * is really made of.
  */
 export async function readTurns(threadId: string) {
   const response = await fetch(`/api/threads/${threadId}/turns`);
@@ -65,7 +98,7 @@ export async function readTurns(threadId: string) {
       turn: number;
       question: string;
       checkpointId: string | null;
-      state: Record<string, { kind: string | null; tool?: string; bytes?: number }>;
+      state: StateSummary;
     }[];
   };
 }

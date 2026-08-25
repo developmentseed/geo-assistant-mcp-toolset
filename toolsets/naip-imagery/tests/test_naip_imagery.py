@@ -3,11 +3,10 @@
 No network: the STAC search and raster load only run against the real
 Planetary Computer, so `fetch_naip_image` is tested on its validation paths
 and pure helpers, and `interpret_image` against a monkeypatched Ollama call.
-The kind-wiring test is the one to keep green above all: it pins the
-cross-toolset contract — the area arrives from whatever published a
-`geojson.AreaOfInterest` (duckdb-analyst's `get_search_area` today) and the
-image moves to `interpret_image` through session state, never through the
-model.
+The state-wiring test is the one to keep green above all: it pins the
+cross-toolset contract — the area arrives from whatever published an
+`area` (duckdb-analyst's `get_search_area` today) and the image moves to
+`interpret_image` through session state, never through the model.
 """
 
 import base64
@@ -17,14 +16,12 @@ import httpx
 import numpy as np
 from shapely.geometry import shape
 
-from mcp_runtime.declarations import consumed_kinds, output_kinds
-from mcp_runtime.kinds import GEOJSON_AREA_OF_INTEREST
+from mcp_runtime.declarations import not_authored, output_fields
 from mcp_runtime.tool_result import is_error
 
 import naip_imagery.tools as tools_module
 from naip_imagery.tools import (
     _MAX_DIMENSION_PX,
-    IMAGE_JPEG_BASE64,
     _area_geometry,
     _resolution_for,
     _stretch_to_uint8,
@@ -56,17 +53,17 @@ DC_AREA: dict[str, Any] = {
 }
 
 
-def test_kind_wiring_links_area_to_image_to_interpretation():
-    """get_search_area → fetch_naip_image → interpret_image, linked by kinds.
+def test_state_wiring_links_area_to_image_to_interpretation():
+    """get_search_area → fetch_naip_image → interpret_image, linked by state.
 
     These assertions are what makes the area and the ~100KB image flow
-    through session state (FILL) instead of the model's context. Renaming a
-    kind string or dropping a tag silently degrades the chain to
+    through session state instead of the model's context. Dropping a
+    `NotAuthored` tag or a result field silently degrades the chain to
     model-passed values, so any change here must be deliberate.
     """
-    assert consumed_kinds(fetch_naip_image)["area"].kind == GEOJSON_AREA_OF_INTEREST
-    assert output_kinds(fetch_naip_image)["naip_image"] == IMAGE_JPEG_BASE64
-    assert consumed_kinds(interpret_image)["image"].kind == IMAGE_JPEG_BASE64
+    assert not_authored(fetch_naip_image) == ["area"]
+    assert "naip_image" in output_fields(fetch_naip_image)
+    assert not_authored(interpret_image) == ["image"]
 
 
 def test_area_geometry_unions_features():
