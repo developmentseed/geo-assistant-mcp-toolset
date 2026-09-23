@@ -13,6 +13,10 @@ factory, wired with ``GROUNDING_PROMPT`` composed the way
 instructions first, :data:`mcp_state.SESSION_STATE_PROMPT` last, since that
 fragment is what the state middleware depends on the model having read.
 
+It also serves the runtime's bundled web client at ``/``, configured with
+``UI`` below rather than the ``MCP_AGENT_UI_*`` environment variables: the
+title and example questions describe this agent, so they belong in the repo.
+
 Run with ``uv run uvicorn agent_app:app --port 8765`` in place of
 ``uvicorn mcp_agent_api.app:app`` — see the README.
 """
@@ -24,6 +28,7 @@ from mcp_agent.main import (
     build_agent,
 )
 from mcp_agent_api.app import Built, Builder, create_app
+from mcp_agent_api.ui import UiConfig, mount_ui
 
 #: Kept separate from the runtime's ``BASE_PROMPT`` so the two compose
 #: without duplicating "use your tools" — this is specifically about *data*
@@ -39,6 +44,19 @@ GROUNDING_PROMPT = (
 )
 
 SYSTEM_PROMPT = f"{GROUNDING_PROMPT}\n\n{SESSION_STATE_PROMPT}"
+
+#: The web client's header and opening screen. Each example is a button that
+#: sends the question, and each one exercises a different tool chain.
+UI = UiConfig(
+    title="geo-assistant",
+    tagline="Places, maps, aerial imagery and spatial SQL",
+    examples=(
+        "Find the Golden Gate Bridge and show me cafes within 1 km.",
+        "Get NAIP imagery around the Golden Gate Bridge and describe what you see.",
+        "Chart the 10 most populated places in France.",
+        "What data sources can you query?",
+    ),
+)
 
 
 def _build(checkpointing: Checkpointing) -> Builder:
@@ -61,4 +79,5 @@ def _build(checkpointing: Checkpointing) -> Builder:
 # own docstring ("checkpoint is not consulted ... nothing here asks for a
 # saver unless the default factory does").
 _checkpointing = Checkpointing()
-app = create_app(build=_build(_checkpointing))
+app = create_app(build=_build(_checkpointing), ui=False)
+mount_ui(app, config=UI)

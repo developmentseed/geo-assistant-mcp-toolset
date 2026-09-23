@@ -6,18 +6,14 @@ readme = "README.md"
 requires-python = ">=3.12,<3.14"
 dependencies = [
     # The shared runtime, installed from PyPI — mcp_runtime (mcp-serve /
-    # mcp-index), mcp_cli, mcp_toolset, with [web] the Chainlit chat host and
-    # with [api] the AG-UI HTTP agent (mcp_agent_api) behind the web/ client.
-    # Both extras are here for the dev environment, which runs `mcp-agent-web`,
-    # `mcp-agent install-elements` and `uvicorn mcp_agent_api.app:app`; the
-    # toolset images sync with `--package` and so never see them. Upgrade by
-    # bumping this range and running `uv lock`.
-    "mcp-toolsets-runtime[web,api]<0.9.0,>=0.8.0",
+    # mcp-index), mcp_cli, mcp_toolset, and with [api] the agent plus its
+    # AG-UI HTTP API and bundled web client (mcp_agent_api), which
+    # `agent_app.py` serves. The toolset images sync with `--package` and so
+    # never see the extra. Upgrade by bumping this range and running `uv lock`.
+    "mcp-toolsets-runtime[api]<0.11.0,>=0.10.2",
     "duckdb-analyst",
     "langchain-mistralai<2.0.0,>=1.1.6",
-    # Serves mcp_agent_api locally. Not part of the runtime's [api] extra, and
-    # only transitively present via chainlit — declared so Chainlit retirement
-    # cannot take it away.
+    # Serves agent_app locally. Not part of the runtime's [api] extra.
     "uvicorn<0.53.0,>=0.52.3",
     "naip-imagery",
 ]
@@ -27,10 +23,6 @@ dependencies = [
 # none of the toolsets. `uv sync --only-group index` in the Dockerfile installs
 # exactly this, at the version uv.lock already pins for everything else.
 index = ["mcp-toolsets-runtime"]
-# Likewise for the hosted chat image (Dockerfile.chat): the agent and its
-# Chainlit stack, no toolsets. [web] rather than [agent] since 0.5.0 — the
-# runtime split the Chainlit host out so an API deployment need not install it.
-chat = ["mcp-toolsets-runtime[web]"]
 dev = [
     "pytest<10.0.0,>=9.0.3",
     "pytest-asyncio<2.0.0,>=1.4.0",

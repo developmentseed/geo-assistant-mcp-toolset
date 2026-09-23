@@ -125,7 +125,9 @@ def list_sources() -> ListSourcesResult:
     channels. Call this before writing SQL against an unfamiliar source.
 
     `query`/`chart` are not limited to these: they also read any public
-    `https://` or `s3://` parquet or CSV URL via `read_parquet`/`read_csv`.
+    `https://` or `s3://` parquet or CSV URL via `read_parquet`/`read_csv`,
+    or a Zarr array store via `read_zarr`/`read_zarr_groups`/
+    `read_zarr_metadata` (remote URLs only — a local path is rejected).
     """
     names = ", ".join(source["name"] for source in SOURCES)
     return ListSourcesResult(
@@ -136,8 +138,9 @@ def list_sources() -> ListSourcesResult:
 @tool
 async def query(sql: str, limit: int = 1000) -> QueryResult | ToolError:
     """Run a read-only SQL SELECT against the curated views from
-    `list_sources`, or an ad hoc `https://`/`s3://` parquet/CSV URL via
-    `read_parquet`/`read_csv`, and return the rows as JSON records.
+    `list_sources`, or an ad hoc `https://`/`s3://` parquet/CSV/Zarr URL via
+    `read_parquet`/`read_csv`/`read_zarr`/`read_zarr_groups`/
+    `read_zarr_metadata`, and return the rows as JSON records.
 
     Only a single `SELECT`/`WITH` statement is allowed. `limit` caps the
     rows returned (default 1000, hard max 10000), enforced regardless of

@@ -1,100 +1,199 @@
-# geo-assistant-mcp-toolset
+# geo-assistant
 
-The [geo-assistant](https://github.com/developmentseed/geo-assistant) workflow
-rebuilt as MCP toolsets: Overture Maps place lookup, geodesic buffering and
-spatial SQL over a locked-down DuckDB connection, plus NAIP aerial imagery
-interpreted by a locally served vision model — with geometries and images
-flowing between tools through session state (never through the model).
+A chat assistant for geographic questions. Ask it about a place, the things
+around that place, what an area looks like from the air, or a data question
+that needs SQL. It finds the answer with tools, shows the result as a map, an
+image, a table or a chart, and tells you when it cannot confirm something.
+
+This repo is the [geo-assistant](https://github.com/developmentseed/geo-assistant)
+workflow, rebuilt as [MCP](https://modelcontextprotocol.io) tools on the
+[mcp-toolsets](#built-on-mcp-toolsets) runtime.
+
+## What it can do
+
+- **Find a place and what is near it.** *"Find the Golden Gate Bridge and show
+  me cafes within 1 km."* The assistant looks up the place in
+  [Overture Maps](https://overturemaps.org), draws a search area around it,
+  and lists the points of interest inside. The result shows on a map.
+- **Look at aerial imagery.** *"Get NAIP imagery around the Golden Gate Bridge
+  and describe what you see."* The assistant gets
+  [NAIP](https://planetarycomputer.microsoft.com/dataset/naip) aerial photos
+  (USA only, about 1 m per pixel), shows them, and a vision model describes
+  them.
+- **Answer data questions with SQL.** *"Chart the 10 most populated places in
+  France."* The assistant writes read-only SQL for
+  [DuckDB](https://duckdb.org) and shows the rows as a table or a chart. It
+  can read:
+  - Natural Earth countries and populated places,
+  - Overture Maps places,
+  - Zarr arrays: global sea surface temperature (NASA MUR) and USA air
+    temperature (NOAA HRRR),
+  - any public `https://` or `s3://` Parquet, CSV or Zarr URL that you give it.
+- **Stay grounded.** The assistant answers data questions only from tool
+  results. If no tool confirms a fact, it tells you so. It does not guess from
+  its training data.
+
+**Limits.** NAIP covers the USA only. A place lookup reads Overture Maps
+directly from the cloud, so the first answer can take a minute or more. The
+assistant cannot write data or read files on your computer.
+
+## Questions to try
+
+The tools are small and general, so the assistant can combine them in many
+ways. Some examples:
+
+**Places and areas** (Overture Maps, shown on a map)
+
+- *"Find Times Square and list the hotels within 500 m."*
+- *"Find the Eiffel Tower. Which museums are within 2 km?"*
+- *"Find Time Out Market in Lisbon, then show restaurants within 300 m."*
+
+**Aerial imagery** (NAIP, USA only)
+
+- *"Get NAIP imagery of Central Park and describe the land cover."*
+- *"Find the Hoover Dam, get imagery within 1 km, and tell me if the
+  reservoir is visible."*
+
+**Country and city data** (Natural Earth, shown as a table or chart)
+
+- *"Which 5 African countries have the largest population?"*
+- *"Chart GDP per person by continent."*
+- *"Which countries have the most cities with more than 1 million people?"*
+
+**Your own data** (any public URL)
+
+- *"Read https://raw.githubusercontent.com/datasets/airport-codes/main/data/airport-codes.csv
+  and count the large airports in each country."*
+- *"What columns does https://duckdb.org/data/holdings.parquet have?"*
+
+**Scientific arrays** (Zarr)
+
+- *"What variables are in the MUR sea surface temperature store?"*
+- *"Take a sample of 5000 HRRR temperature values and give the mean in
+  Celsius."*
+
+**Grounding**
+
+- *"How many people live in Atlantis?"* The assistant tells you that no tool
+  can confirm this. It does not invent a number.
+
+## How it works
 
 ```
-toolsets/<name>/tools.py  ──▶  ghcr.io/<owner>/<repo>/mcp-<name>  ──▶  k8s Service mcp-<name>
-   (LangChain @tool fns)        (Dockerfile --build-arg TOOLSET=...)     (charts/mcp-toolset)
+ browser ──▶ agent API (agent_app.py) ──▶ MCP toolsets ──────────▶ data
+ chat page   chat model + system prompt   duckdb-analyst  (SQL)    Overture, Natural Earth, Zarr, URLs
+                                          naip-imagery    (images) Planetary Computer, Ollama vision model
 ```
 
-## The toolsets
+1. You type a question in the chat page.
+2. The agent API sends it to a chat model (Mistral by default) with a list of
+   tools.
+3. The model calls tools. Each toolset is a separate MCP server.
+4. The tools send back a short text for the model and structured data for the
+   page. The page shows the data as a map, an image, a table or a chart.
 
-| Toolset | Tool | Does |
-| --- | --- | --- |
-| `duckdb-analyst` | `list_sources` | Lists the pre-registered views (Natural Earth countries/places, Overture Maps places) `query`/`chart` can read, with column descriptions. |
-| | `query` | Runs a read-only SQL `SELECT` against those views, or any public `https://`/`s3://` parquet/CSV, and returns rows as JSON. |
-| | `chart` | Runs a query like `query` does, then fills the rows into a Vega-Lite spec you supply. |
-| | `get_place` | Finds one place (POI) in Overture Maps by fuzzy name match within a bounding box. |
-| | `get_search_area` | Buffers that place by a radius in km into an area of interest. |
-| | `places_within_area` | Lists Overture places of one category inside an area of interest. |
-| `naip-imagery` | `fetch_naip_image` | Fetches NAIP aerial imagery (USA only, ~1m resolution) over an area of interest from Microsoft Planetary Computer. |
-| | `interpret_image` | Describes that image with an Ollama-served vision model, on request. |
+Large values, for example a search-area polygon or an image, do not go
+through the model. The tools pass them to each other through
+[session state](#how-the-tools-share-data).
 
-The two toolsets chain together: `get_place` → `get_search_area` →
-`places_within_area` / `fetch_naip_image` → `interpret_image`, with
-geometries and the rendered image passed between tools through session state
-rather than through the model — see
-[How the tools compose](#how-the-tools-compose-session-state).
+## Run it on your computer
 
-`interpret_image` talks to Ollama (`OLLAMA_BASE_URL`/`OLLAMA_IMAGE_MODEL`,
-default `localhost:11434`/`gemma4:cloud`). The default is an Ollama
-**cloud** model, so the localhost demo needs no GPU: `ollama signin`, then
-`ollama pull gemma4:cloud`. Any locally pulled vision model works via
-`OLLAMA_IMAGE_MODEL`.
+### Before you start
 
-## Run it
+You need:
+
+- [uv](https://docs.astral.sh/uv/) (Python 3.12 or 3.13),
+- [Node.js](https://nodejs.org) 22.12 or later, to build the views (map,
+  image, table and chart),
+- an API key for a chat model. The repo installs the Mistral provider. For
+  another provider, see the comments in `.example.env`.
+- (optional) [Ollama](https://ollama.com), to describe aerial images. The
+  default vision model runs in Ollama's cloud, so you do not need a GPU.
+
+### Set up (one time)
 
 ```sh
-uv sync                # runtime from PyPI + both toolsets, into one .venv
+uv sync                        # install Python dependencies into .venv
+cp .example.env .env           # then set PROVIDER_MODEL and PROVIDER_API_KEY
+./scripts/build-views          # build the map, image, table and chart views
+ollama signin && ollama pull gemma4:cloud   # optional: image descriptions
 ```
 
-Then bring up the full chat stack — MCP toolsets, then the agent API, then
-the web client — each step in its own shell, left running:
+### Start
 
-1. **Configure and build once.** Copy `.example.env` to `.env` and set
-   `PROVIDER_MODEL`, `PROVIDER_API_KEY` and `MCP_URL=http://localhost:8000/`
-   (the index root — an existing `.env` that says `.../mcp` finds no
-   toolsets against `mcp-serve-local`). Then `./scripts/build-views` — the
-   map, table and chart views render from these bundles, and
-   `mcp-serve-local` refuses to start without them. For `interpret_image`
-   (naip-imagery), also `ollama signin && ollama pull gemma4:cloud` — the
-   default `OLLAMA_IMAGE_MODEL` is an Ollama **cloud** model, so this needs
-   no local GPU.
+Run each command in its own terminal, from the repo root. Start them in this
+order, because the agent API finds the tools when it starts.
 
-2. **MCP: serve both toolsets.**
+```sh
+uv run mcp-serve-local                      # 1. the tools, on :8000
+uv run uvicorn agent_app:app --port 8765    # 2. the agent API and chat page, on :8765
+```
 
-   ```sh
-   uv run mcp-serve-local        # toolsets at /<name>/mcp, index at /, on :8000
-   ```
+Open <http://localhost:8765>. The start page shows example questions as
+buttons. Select one to start.
 
-3. **Agent API: the thing that calls the model and drives the tools.** From
-   the repo root, so `.env` is found:
+### If something goes wrong
 
-   ```sh
-   uv run uvicorn agent_app:app --port 8765
-   ```
+| Problem | Cause and fix |
+| --- | --- |
+| `mcp-serve-local` does not start and names a missing view | Run `./scripts/build-views`. |
+| The agent API stops at startup | `PROVIDER_MODEL` or `PROVIDER_API_KEY` is not set in `.env`. |
+| The assistant has no tools | Set `MCP_URL=http://localhost:8000/` (the index root, not `.../mcp`), and start `mcp-serve-local` first. |
+| Image descriptions fail | Ollama is not running, or you did not run `ollama signin`. To use a local model, set `OLLAMA_IMAGE_MODEL`. |
+| Place lookups fail with "No files found" | Overture deletes old releases. Set `OVERTURE_RELEASE` to a current release from [the release list](https://docs.overturemaps.org/release/latest/). |
+| A place lookup is slow | This is expected. Overture is read from the cloud on each query. |
 
-   `agent_app:app` — not the runtime's own `mcp_agent_api.app:app` — is this
-   repo's system prompt wrapper; see [Chat over
-   HTTP](#chat-over-http-the-agent-api-and-the-web-client) below.
+## How the tools share data
 
-4. **Web client: the chat UI.**
+A tool that makes a large value, for example `get_search_area`, stores it in
+**session state** under a key. The model sees only the key:
 
-   ```sh
-   cd web && npm ci && npm run dev   # :5173, proxies /api to the agent API
-   ```
+```
+Search area created: 1.0 km around Time Out Market Lisboa.  [state updated: duckdb-analyst/get_search_area/search_area]
+```
 
-Open http://localhost:5173 and chat. A few prompts that exercise the tooling:
+The model then gives that key to the next tool:
 
-- *"Find the Golden Gate Bridge and show me cafes within 1km."* — chains
-  `get_place` → `get_search_area` → `places_within_area`, rendered on the
-  map view.
-- *"Get NAIP imagery over that area from 2020 to 2023 and describe what's
-  there."* — chains `fetch_naip_image` → `interpret_image`; needs Ollama
-  running (`ollama signin && ollama pull gemma4:cloud`, or point
-  `OLLAMA_IMAGE_MODEL` at a model you already have).
-- *"What data sources can you query?"*, then *"Chart populated places in
-  France by population."* — `list_sources` → `chart`, rendered as a table or
-  chart view.
+```
+places_within_area(category="cafe", area="@state:duckdb-analyst/get_search_area/search_area")
+```
 
-The agent API's routes and checkpointing caveats are in
-[Chat over HTTP](#chat-over-http-the-agent-api-and-the-web-client) below.
-Prefer calling the raw tools with no model in the loop? Use `mcp-cli` against
-the server from step 2:
+The runtime replaces the key with the real value before the tool runs.
+Parameters tagged `NotAuthored` accept only a key, never a value that the
+model wrote. Thus the model cannot invent a polygon, and a 100 KB image never
+goes into the model's context.
+
+| Tool (toolset) | Reads (parameter) | Writes (state key) |
+| --- | --- | --- |
+| `get_place` (duckdb-analyst) | — | `duckdb-analyst/get_place/place` |
+| `get_search_area` (duckdb-analyst) | `place` | `duckdb-analyst/get_search_area/search_area` |
+| `places_within_area` (duckdb-analyst) | `area` | `duckdb-analyst/places_within_area/places` |
+| `fetch_naip_image` (naip-imagery) | `area` | `naip-imagery/fetch_naip_image/naip_image` |
+| `interpret_image` (naip-imagery) | `image` | — |
+
+The chat page has a session-state panel that shows these values. For the full
+mechanism, see the runtime's [SESSION-STATE.md][session-state].
+
+## The tools
+
+| Toolset | Tool | What it does |
+| --- | --- | --- |
+| `duckdb-analyst` | `list_sources` | Lists the data sources that `query` and `chart` can read, with column descriptions. |
+| | `query` | Runs one read-only SQL `SELECT` and returns the rows. The page shows a **table**. |
+| | `chart` | Runs a query and puts the rows into a Vega-Lite spec. The page shows a **chart**. |
+| | `get_place` | Finds one place in Overture Maps by name, inside a bounding box. The page shows a **map**. |
+| | `get_search_area` | Draws a circle of a given radius (km) around that place. **Map.** |
+| | `places_within_area` | Lists Overture places of one category inside the search area. **Map.** |
+| `naip-imagery` | `fetch_naip_image` | Gets NAIP aerial imagery for the search area from Microsoft Planetary Computer. The page shows the **image**. |
+| | `interpret_image` | Describes that image with a vision model served by Ollama. |
+
+The DuckDB connection is locked down: SQL is read-only, and the tools cannot
+read or write local files. See the module docstrings in
+`toolsets/duckdb-analyst/src/duckdb_analyst/security.py` and `connection.py`.
+
+### Call a tool without a model
+
+Use `mcp-cli` to test a tool directly, while `mcp-serve-local` runs:
 
 ```sh
 uv run mcp-cli list --url http://localhost:8000/duckdb-analyst/mcp
@@ -104,331 +203,129 @@ uv run mcp-cli call get_place \
 uv run mcp-cli repl --url http://localhost:8000/naip-imagery/mcp
 ```
 
-`mcp-serve-local` mounts each toolset at `/<name>/mcp` and serves the index
-document at `/` — the same URL shape the shared domain has in production, so
-an `mcp-cli`, an `mcp-agent` or an MCP Inspector session can be pointed at it
-unchanged. Toolsets are also importable directly (e.g.
-`from duckdb_analyst.tools import TOOLS`) for in-process use in tests,
-notebooks or an agent repo.
+## Find your way around
 
-## Chat over HTTP: the agent API and the web client
+```
+agent_app.py                  the assistant: system prompt, chat page title and example questions
+toolsets/
+  duckdb-analyst/
+    src/duckdb_analyst/
+      tools.py                list_sources, query, chart
+      geo_tools.py            get_place, get_search_area, places_within_area
+      connection.py           the DuckDB connection and its data sources
+      security.py             the SQL checks
+    ui/                       map, table and chart views
+    tests/
+  naip-imagery/               the same layout: fetch_naip_image, interpret_image, image view
+tests/test_contract.py        checks every toolset against the runtime's rules
+scripts/                      lint, test, format, build-views, remove-toolset
+Dockerfile, charts/, .github/ build and deploy each toolset (see Deployment)
+```
 
-`mcp_agent_api` is a FastAPI app (from the runtime) that streams each turn as
-[AG-UI](https://docs.ag-ui.com/) SSE events. `agent_app.py` (this repo's own,
-not the runtime's) wraps it with `create_app`'s documented `build=` seam to
-add a data-grounding rule to the system prompt — the runtime's default only
-says to use tools "whenever they can ground your answer," which does not stop
-the model answering a data question (a place, a count, what an image shows)
-from its own training data instead of a tool result. Run it with
-`uv run uvicorn agent_app:app`, not `mcp_agent_api.app:app` directly. `web/`
-is the matching browser client — a React app copied from the runtime's
-`examples/agui-events/web/` (the runtime does not ship it as a package) and
-adapted for this repo. Re-diff `web/` against that example on runtime bumps.
-The three-step run order is [above](#run-it); a missing `PROVIDER_MODEL` stops
-the API at startup by design, and the Vite dev server proxies `/api` to it so
-the browser talks to one origin and no CORS configuration is needed.
+### Where to make a change
 
-The API has five routes:
-
-| Route | Purpose |
+| To do this | Change this |
 | --- | --- |
-| `POST /runs` | Run one turn; the response streams AG-UI events. |
-| `GET /threads/{id}` | The transcript and state metadata of a thread. |
-| `GET /threads/{id}/turns` | The turns of a thread, with per-turn state. |
-| `GET /threads/{id}/state/{key}` | One state value; `?turn=N` reads it as of turn N. |
-| `GET /views/{toolset}/{view}` | The HTML bundle of a `ui://` view. |
+| Change how the assistant behaves | `GROUNDING_PROMPT` in `agent_app.py` |
+| Change the chat page title or example questions | `UI` in `agent_app.py` |
+| Add a data source for SQL | `connection.py`: add a view, and describe its columns for `list_sources` |
+| Add a tool | Write it in the toolset's `tools.py` and add it to `TOOLS` |
+| Add a toolset | `uv run mcp-toolset new <name>` (add `--with-ui` for a view) |
+| Remove a toolset | `./scripts/remove-toolset <name>` |
+| Use a different chat model | `PROVIDER_MODEL` in `.env` |
 
-See the runtime's [CONSUMING.md][consuming] §"Serving the agent over HTTP" for
-the full contract.
-
-Two caveats. Threads are checkpointed in the API process's memory by default,
-so a restart loses them (set `MCP_AGENT_CHECKPOINT` to a PostgreSQL URL to
-keep them). And a thread id is the only credential on the read routes — treat
-thread ids as secrets, and put auth in front of the API before exposing it.
-
-[consuming]: https://github.com/developmentseed/mcp-toolsets-runtime/blob/main/docs/CONSUMING.md
-
-There is also a legacy Chainlit chat (`uv run mcp-agent-web`, or
-`uv run mcp-agent` for a terminal REPL) — see
-[Legacy Chainlit chat](#legacy-chainlit-chat) at the bottom. Use the agent API
-and `web/` above instead; Chainlit stays only until the hosted deployment
-moves off it.
-
-## How the tools compose (session state)
-
-Large values — geometries, images — pass between tools through **session
-state** instead of through the model's context: every `ToolResult` data key a
-tool returns is captured under a `<toolset>/<tool>/<field>` state key, and a
-parameter tagged `NotAuthored` accepts only an `@state:<key>` handle to one —
-never a model-written literal. The model reads which keys exist off a
-`[state updated: ...]` breadcrumb and passes the handle back; the client
-substitutes the real value on the way to the server, so it can't be
-hallucinated because it is never offered as a literal. This is the ported
-geo-assistant flow, spanning both toolsets:
-
-| Tool (toolset) | Consumes (parameter) | Publishes (state key) |
-| --- | --- | --- |
-| `get_place` (duckdb-analyst) | — | `duckdb-analyst/get_place/place` |
-| `get_search_area` (duckdb-analyst) | `place` (`NotAuthored`) | `duckdb-analyst/get_search_area/search_area` |
-| `places_within_area` (duckdb-analyst) | `area` (`NotAuthored`) | `duckdb-analyst/places_within_area/places` |
-| `fetch_naip_image` (naip-imagery) | `area` (`NotAuthored`) | `naip-imagery/fetch_naip_image/naip_image` |
-| `interpret_image` (naip-imagery) | `image` (`NotAuthored`) | — |
-
-Nothing here names a shared vocabulary: a data key is a public name on its
-own, and `places_within_area`'s `area` parameter resolves to whichever tool
-last published one — `get_search_area` today, or any other tool's `area`-named
-key. The image hop is where the mechanism pays most: a 512px JPEG is ~100KB of
-base64 that never enters the chat model's context on its way to the vision
-model.
-
-The producing call's result carries the breadcrumb the model reads:
-
-```
-Search area created: 1.0 km around Time Out Market Lisboa.  [state updated: duckdb-analyst/get_search_area/search_area]
-```
-
-and the next call passes the handle back explicitly:
-
-```
-places_within_area(category="cafe", area="@state:duckdb-analyst/get_search_area/search_area")
-```
-
-Full mechanism (the `state.produces`/`state.not_authored` health fields, the
-refusal a wrong or missing handle gets back, what a tracing backend still
-sees) is in the runtime's [SESSION-STATE.md][session-state] — the table above
-is what's actually wired up here.
-
-[session-state]: https://github.com/developmentseed/mcp-toolsets-runtime/blob/main/docs/SESSION-STATE.md
-
-## Toolset UI views
-
-`duckdb-analyst`'s three geo tools (`get_place`, `get_search_area`,
-`places_within_area`) share a **map** view; `query` gets a **table** view and
-`chart` a **chart** view. A view is a small frontend component that an MCP
-Apps host — Claude, ChatGPT, or the bundled chat clients here — renders in a
-sandboxed iframe and feeds the tool's `structuredContent`; it's progressive
-enhancement, so a plain client still gets the tool's `message` and data.
-
-Build the bundles (needs node):
-
-```sh
-./scripts/build-views
-```
-
-Built bundles live at `<package>/views/*.html`, are git-ignored, and must
-exist before `mcp-serve`/`mcp-serve-local` will start — the Dockerfile's node
-stage and CI's `ui` job rebuild them too. For the full authoring contract
-(adding a view to a new tool), see
-[Adding a toolset UI view](#adding-a-toolset-ui-view) at the bottom.
-
-## Deployment
-
-- **ci.yml** (PRs + main): lint, tests, `helm lint`, and a no-push Docker
-  build of every image affected by the change. Always runs — no cluster
-  needed.
-- **deploy.yml** (main): builds and pushes each changed toolset's image and
-  `helm upgrade --install`s it. Changes to shared build inputs (`charts/`,
-  `Dockerfile`, `uv.lock`, root `pyproject.toml`) rebuild *both* toolsets —
-  how a runtime version bump reaches every service. Skipped entirely unless
-  `KUBE_CONFIG` and `MCP_NAMESPACE` are set — see
-  [Deploying this repo](#deploying-this-repo) at the bottom for what those
-  are and how to set up a cluster from scratch.
+A tool that does I/O is `async def`. A sync tool does only computation. Each
+tool returns a `ToolResult` or a `ToolError`. The runtime checks this at
+startup, and `tests/test_contract.py` checks it in CI. For the rules, see the
+runtime's [CONSUMING.md][consuming] §2.
 
 ## Development
 
 ```sh
-./scripts/format        # ruff autofix + format
-./scripts/lint          # ruff checks + mypy over tests/ and toolsets/
-./scripts/test          # pytest (args forwarded, e.g. ./scripts/test -k naip)
+./scripts/format        # ruff autofix and format
+./scripts/lint          # ruff, and mypy over tests/ and toolsets/
+./scripts/test          # pytest; arguments go to pytest, e.g. ./scripts/test -k naip
+./scripts/build-views   # rebuild the views after you change a toolset's ui/
 ```
 
-`web/` (the chat client) and the toolset `ui/` directories need Node — Vite 7
-wants ≥ 22.12 (or 20.19). `web/` is outside the Python workspace and outside
-`scripts/lint`; `npm run build` in it typechecks and bundles.
+Some tests read live public data (Overture, Zarr stores). They fail when that
+data source is not available.
 
-`tests/` holds only the toolset contract sweep — every directory under
-`toolsets/` must import, export a non-empty `TOOLS`, and satisfy the same
-`ToolResult` and docstring gates `build_server` applies at startup.
+## Built on mcp-toolsets
 
----
-
-## Where this comes from
-
-This repo is an instance of the
-[mcp-toolsets](https://github.com/developmentseed/mcp-toolsets) template — a
-monorepo of **toolsets** (small packages of
-[LangChain](https://python.langchain.com) tools) each auto-deployed as its
-own [MCP](https://modelcontextprotocol.io) service on Kubernetes — with the
-geo-assistant tools as its content. Everything that isn't a toolset comes
-from one PyPI package,
+This repo contains the geo-assistant tools and nothing else. The server, the
+agent, the chat page and the CLI come from one PyPI package,
 [**mcp-toolsets-runtime**](https://github.com/developmentseed/mcp-toolsets-runtime)
-[![PyPI](https://img.shields.io/pypi/v/mcp-toolsets-runtime?label=mcp-toolsets-runtime)](https://pypi.org/project/mcp-toolsets-runtime/),
-bounded in the root `pyproject.toml` and pinned exactly by `uv.lock`. Never
-add a module under `mcp_runtime`, `mcp_cli`, `mcp_agent`, `mcp_agent_api` or
-`mcp_toolset` here, and never patch runtime behaviour locally — fix it
-upstream, release, then bump the pin
-(`uv lock --upgrade-package mcp-toolsets-runtime`; because `uv.lock` is a
-shared build input, merging the bump rebuilds and redeploys everything). This
-repo owns `toolsets/*`, `charts/*`, the `Dockerfile`, the workflows and
-`tests/test_contract.py`.
+[![PyPI](https://img.shields.io/pypi/v/mcp-toolsets-runtime?label=mcp-toolsets-runtime)](https://pypi.org/project/mcp-toolsets-runtime/).
+The repo layout and the deploy workflows come from the
+[**mcp-toolsets**](https://github.com/developmentseed/mcp-toolsets) template.
 
-| Module | What it gives you |
+| Runtime module | What it does here |
 | --- | --- |
-| `mcp_runtime` | Serves a toolset's `TOOLS` as a stateless streamable-HTTP MCP server (`mcp-serve` / `mcp-serve-local`) and its `VIEWS` as `ui://` resources. Also runs the directory service (`mcp-index`). |
-| `mcp_cli` | Typer/rich client (`mcp-cli`) to list and call tools on a running service. |
-| `mcp_toolset` | Scaffolding: `mcp-toolset new [--with-ui] <name>` writes a conforming toolset into `toolsets/`. |
-| `mcp_agent` / `mcp_agent_api` | The example chat, as a Chainlit UI/REPL (legacy) or as an HTTP+AG-UI API (current — see [Chat over HTTP](#chat-over-http-the-agent-api-and-the-web-client)). |
-| `mcp_state` | Keeps large tool values out of the model's context — see [How the tools compose](#how-the-tools-compose-session-state). |
+| `mcp_runtime` | Serves each toolset as an MCP server (`mcp-serve`, `mcp-serve-local`) and the index of all toolsets (`mcp-index`). |
+| `mcp_agent`, `mcp_agent_api` | The agent, its HTTP API and the chat page that `agent_app.py` serves. |
+| `mcp_state` | Session state between tools. |
+| `mcp_cli` | `mcp-cli`, to call tools by hand. |
+| `mcp_toolset` | `mcp-toolset new`, to make a new toolset. |
 
-The template's own docs (further below) still mention its shipped example
-toolsets (`hello`, `credential-demo`, `stac-explorer`) — those were not
-carried into this instance; read `duckdb-analyst`/`naip-imagery` in their
-place.
+Each toolset is a standard MCP server, so any MCP client can use it. The views
+are standard [MCP Apps][ext-apps], so Claude, ChatGPT and other MCP Apps hosts
+also show these views.
 
-### Adding a toolset
-
-```sh
-uv run mcp-toolset new my-toolset            # scaffolds toolsets/my-toolset, registers it in the uv workspace
-```
-
-Write `TOOLS` (a list of LangChain `@tool` functions) in
-`toolsets/my-toolset/src/my_toolset/tools.py`, each returning
-`mcp_runtime.tool_result.ToolResult | ToolError` — see
-[Typed tool returns](#typed-tool-returns) below for the contract a contract
-test enforces. Add tests, then merge to `main`; CI builds and deploys
-`mcp-my-toolset` automatically. Async tools do I/O; sync tools are pure
-computation (the runtime runs them in a thread pool).
+Do not change runtime behaviour in this repo. Fix it in the runtime, release
+it, then update the version here:
 
 ```sh
-./scripts/remove-toolset my-toolset          # inverse: merging the deletion tears down the live service
+uv lock --upgrade-package mcp-toolsets-runtime
 ```
 
-### Typed tool returns
+Runtime documentation:
 
-Every tool returns one dict per call, in one of two shapes from
-`mcp_runtime.tool_result`:
+- [CONSUMING.md][consuming]: how to write a toolset, add a view, and serve
+  the agent over HTTP.
+- [SESSION-STATE.md][session-state]: how tools share large values.
 
-- **`ToolResult`** — success: a required str `message` plus any data keys
-  your tool declares.
-- **`ToolError`** — a structured error: a short machine-readable `error`
-  kind and a `detail`.
-
-The runtime derives each tool's MCP `outputSchema` from its return
-annotation and validates every result against it before sending. A tool
-whose annotation doesn't follow the contract **fails at startup**
-(`build_server` aborts, naming the tool) and fails the contract test in CI.
-Recommended: one `ToolResult` subclass per tool with each data key as
-`NotRequired[...]`, a one-line docstring for the schema description, and
-construct returns with TypedDict call syntax
-(`ToolResult(message=...)`) — mypy-checked, a plain dict at runtime. Keys not
-declared in the annotation are silently dropped from `structuredContent`, and
-bare `str`/`list`/`dict[str, Any]` return types are rejected at startup.
-
-### Adding a toolset UI view
-
-Scaffold a toolset with an example view, then build it (needs node):
-
-```sh
-uv run mcp-toolset new --with-ui my-toolset
-cd toolsets/my-toolset/ui && npm install && npm run build
-```
-
-A toolset opts in with three things, validated at startup: a `VIEWS`
-export (`{tool_name: view_id}`), a built bundle at
-`<package>/views/<view_id>.html` (self-contained; the shipped `ui/` builds
-these with Vite + `vite-plugin-singlefile`), and the host bridge
-[`@developmentseed/mcp-view`][mcp-view] in the view's own dependencies:
-
-```ts
-import { onData, sendMessage } from "@developmentseed/mcp-view";
-
-onData<MyResult>((data) => render(data));  // the tool's structuredContent
-button.onclick = () => sendMessage("…");   // a user turn back into the chat
-```
-
-The runtime serves each view as resource `ui://<toolset>/<view_id>` and
-stamps the owning tool's `_meta` with that URI — standard
-[MCP Apps][ext-apps], so any compliant host renders the same bundle
-unchanged. A view can only act on what the tool put in its `ToolResult`
-(pre-signed/short-lived URLs, never tokens), and an interaction's
-`sendMessage(...)` arrives back as a user message, driving the model to call
-the next tool — `toolsets/stac-explorer` in the upstream template is the
-worked example of that pattern.
-
-[mcp-view]: https://www.npmjs.com/package/@developmentseed/mcp-view
+[consuming]: https://github.com/developmentseed/mcp-toolsets-runtime/blob/main/docs/CONSUMING.md
+[session-state]: https://github.com/developmentseed/mcp-toolsets-runtime/blob/main/docs/SESSION-STATE.md
 [ext-apps]: https://github.com/modelcontextprotocol/ext-apps
 
-### Legacy Chainlit chat
+## Deployment
 
-```sh
-uv run mcp-agent install-elements    # writes public/elements/McpView.jsx, needed for views to render
-uv run mcp-agent-web                 # serves the Chainlit chat at :8080 (CHAINLIT_PORT)
-uv run mcp-agent                     # or a terminal REPL
+Each toolset deploys to Kubernetes as its own service.
+
+- **ci.yml** (pull requests and `main`): lint, tests, `helm lint`, and a
+  Docker build (no push) of each changed toolset.
+- **deploy.yml** (`main`): builds and pushes the image of each changed
+  toolset, then runs `helm upgrade --install`. A change to a shared file
+  (`charts/`, `Dockerfile`, `uv.lock`, root `pyproject.toml`) deploys all
+  toolsets. A runtime update changes `uv.lock`, so it deploys all toolsets.
+  When you delete a toolset directory and merge, the workflow uninstalls
+  that service.
+
+Deploys do not run until the `KUBE_CONFIG` secret and the `MCP_NAMESPACE`
+variable are set. With the `MCP_INGRESS_HOST` secret, all toolsets share one
+domain:
+
+```
+https://<host>/                   index: JSON list of each toolset and its tools
+https://<host>/docs               the same list, in Swagger UI
+https://<host>/<toolset>/mcp      MCP endpoint
+https://<host>/<toolset>/health   liveness, with the toolset's tool names
 ```
 
-Bring-your-own-model like the API above: set `PROVIDER_MODEL` and
-`PROVIDER_API_KEY` (env or `.env`), or enter them in Chainlit's ⚙ settings.
-`install-elements` re-runs are needed after a runtime upgrade; nothing is
-written at runtime, so it works on a read-only filesystem, and
-`mcp-agent-web` starts without it but warns and won't render views. This
-surface is being retired in favour of the agent API and `web/` client, both
-locally and (eventually) in the hosted deployment. It also does not get
-`agent_app.py`'s grounding rule: `mcp_agent.web` builds its agent internally,
-with no `system_prompt` seam a host can pass through — another reason to
-prefer the agent API above.
+Only the toolsets deploy. The agent API and chat page run locally for now.
+To build one image locally:
+`docker build --build-arg TOOLSET=duckdb-analyst .`
 
-### Per-user credentials
+<details>
+<summary>Set up a cluster from the beginning</summary>
 
-A pattern for tools that act on a user's behalf, demonstrated by the
-template's (removed here) `credential-demo` toolset. Credentials never
-become tool arguments (the model would see them); instead the client sends
-them as HTTP headers and the tool reads them at call time:
+You need a Kubernetes cluster (v1.24 or later) that can pull from `ghcr.io`.
+`./scripts/bootstrap` sets the `MCP_NAMESPACE` variable and puts your
+namespace into the `__MCP_NAMESPACE__` placeholders below.
 
-```python
-from mcp_runtime.credentials import credential_from_header
-
-@tool
-def whoami() -> WhoamiResult:
-    """Report which account the calling user's credential belongs to."""
-    token = credential_from_header("x-demo-token")
-    ...
-
-TOOLS = [whoami]
-CREDENTIAL_HEADERS = ["x-demo-token"]  # advertised in /health and the index
-```
-
-`mcp-agent` supports this per-call, not just per-process — an httpx client
-factory injects the calling user's headers at request time, scoped to
-`user_credentials(...)`:
-
-```python
-from mcp_agent.main import user_credentials
-
-with user_credentials({"x-demo-token": the_users_token}):
-    result = await agent.ainvoke(...)
-```
-
-Neither toolset in this repo declares `CREDENTIAL_HEADERS` today; reach for
-this if you add a tool that needs one.
-
-### Deploying this repo
-
-The repo is a GitHub template — **Use this template** to create your own
-instance. `./scripts/bootstrap` is the intended first step after creating a
-repo from it: it sets the `MCP_NAMESPACE` Actions variable (deploys are
-skipped until it's set), substitutes `__MCP_NAMESPACE__` placeholders below
-with your namespace, and optionally removes the shipped example toolsets.
-
-```sh
-./scripts/bootstrap            # prompts for a namespace + which examples to keep
-./scripts/bootstrap my-namespace --keep-examples   # or non-interactively
-```
-
-Deploying (this repo or a new instance) needs a Kubernetes cluster
-(v1.24+) with outbound access to `ghcr.io`:
-
-1. **Namespace and a scoped deploy service account** — the kubeconfig
-   behind the `KUBE_CONFIG` GitHub secret. Don't use cluster-admin:
+1. **Namespace and a deploy service account.** The `KUBE_CONFIG` secret holds
+   its kubeconfig. Do not use cluster-admin.
 
    ```sh
    kubectl create namespace __MCP_NAMESPACE__
@@ -439,8 +336,9 @@ Deploying (this repo or a new instance) needs a Kubernetes cluster
      --role=deployer --serviceaccount=__MCP_NAMESPACE__:deployer
    ```
 
-   `KUBE_CONFIG` is a complete kubeconfig file with a deployer token inside,
-   reachable from GitHub's runners. The token expires (~90 days here):
+   `KUBE_CONFIG` is a full kubeconfig file with a deployer token. GitHub's
+   runners must be able to reach the cluster. The token expires (here, after
+   about 90 days):
 
    ```sh
    TOKEN=$(kubectl -n __MCP_NAMESPACE__ create token deployer --duration=2160h)
@@ -457,7 +355,8 @@ Deploying (this repo or a new instance) needs a Kubernetes cluster
    gh secret set KUBE_CONFIG < deployer.kubeconfig && rm deployer.kubeconfig
    ```
 
-2. **GHCR pull secret** — if the repo is private, its images are too:
+2. **GHCR pull secret.** Only if the repo is private, because then its images
+   are private too:
 
    ```sh
    kubectl -n __MCP_NAMESPACE__ create secret docker-registry ghcr-pull \
@@ -466,8 +365,7 @@ Deploying (this repo or a new instance) needs a Kubernetes cluster
      --docker-password=<token-with-read:packages>
    ```
 
-3. **ingress-nginx** and **cert-manager** (the charts' ingress defaults
-   assume both):
+3. **ingress-nginx and cert-manager.** The chart's ingress defaults need both:
 
    ```sh
    helm upgrade --install ingress-nginx ingress-nginx \
@@ -480,52 +378,20 @@ Deploying (this repo or a new instance) needs a Kubernetes cluster
      --set crds.enabled=true
    ```
 
-4. **DNS + a ClusterIssuer** — point an A/CNAME record for your hostname at
-   the ingress controller's load balancer
-   (`kubectl -n ingress-nginx get svc ingress-nginx-controller`), set your
-   email in `k8s/letsencrypt-clusterissuer.yaml`, then
-   `kubectl apply -f k8s/letsencrypt-clusterissuer.yaml`. The `mcp-index`
-   Ingress is annotated `cert-manager.io/cluster-issuer: letsencrypt`, so
-   cert-manager issues and renews the `__MCP_NAMESPACE__-tls` Secret every
-   Ingress shares.
+4. **DNS and a ClusterIssuer.** Point an A or CNAME record for your hostname
+   at the ingress controller's load balancer
+   (`kubectl -n ingress-nginx get svc ingress-nginx-controller`). Set your
+   email in `k8s/letsencrypt-clusterissuer.yaml`, then run
+   `kubectl apply -f k8s/letsencrypt-clusterissuer.yaml`. cert-manager then
+   issues and renews the `__MCP_NAMESPACE__-tls` certificate that all
+   ingresses share.
 
-Finally, set the optional shared-domain secret:
+5. **Shared domain.** `gh secret set MCP_INGRESS_HOST --body <the-hostname>`.
+   Without it, the services are ClusterIP only:
 
-```sh
-gh secret set MCP_INGRESS_HOST --body <the-hostname>
-```
+   ```sh
+   kubectl -n __MCP_NAMESPACE__ port-forward svc/mcp-duckdb-analyst 8000:8000
+   uv run mcp-cli list
+   ```
 
-With `MCP_INGRESS_HOST` set, every toolset gets an Ingress on that host at
-`/<name>` and an `mcp-index` service serves a directory of both toolsets at
-the domain root:
-
-```
-https://<host>/                   # index: JSON directory of every toolset + its tools
-https://<host>/docs               # the same directory, browsable (Swagger UI)
-https://<host>/<toolset>/mcp      # MCP endpoint (prefix stripped by ingress)
-https://<host>/<toolset>/health   # liveness, lists the toolset's tool names
-```
-
-```sh
-curl https://<host>/ | jq
-uv run mcp-cli list --url https://<host>/duckdb-analyst/mcp
-```
-
-Without `MCP_INGRESS_HOST`, services stay ClusterIP-only:
-
-```sh
-kubectl -n __MCP_NAMESPACE__ port-forward svc/mcp-duckdb-analyst 8000:8000
-uv run mcp-cli list
-```
-
-An **`MCP_CHAT_HOST`** secret additionally deploys the hosted Chainlit chat
-(`Dockerfile.chat`, `charts/mcp-chat`) at `chat.<MCP_INGRESS_HOST>` by
-default — **bring-your-own-model**: the deployment holds no provider key,
-each user enters their own `provider:model` and API key in ⚙ settings, kept
-only in that browser session. Conversations checkpoint in the pod's memory by
-default (lost on restart/redeploy/scale-up); point `MCP_AGENT_CHECKPOINT` at
-a PostgreSQL URL and add the runtime's `[checkpointing-postgres]` extra to
-`Dockerfile.chat` to keep them. This deployment still runs Chainlit; the
-local-only agent API + `web/` client will eventually replace it here too.
-
-Build an image locally with `docker build --build-arg TOOLSET=duckdb-analyst .`.
+</details>

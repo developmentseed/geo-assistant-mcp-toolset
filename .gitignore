@@ -9,23 +9,10 @@ dist/
 .venv/
 .env
 
-# Chainlit (generated at runtime by mcp-agent-web)
-.chainlit/
-.files/
-chainlit.md
-
-# Chainlit host element: ships inside mcp-toolsets-runtime and is copied here by
-# `mcp-agent install-elements`, so it is an install artifact, not source.
-public/elements/
-
 # Toolset UI views: node deps and built bundles (rebuilt by the Dockerfile's
 # node stage / `npm run build`; served from <package>/views/ at runtime).
 toolsets/*/ui/node_modules/
 toolsets/*/src/*/views/
-
-# Web chat client (Vite): node deps and build output
-web/node_modules/
-web/dist/
 
 # Tooling caches
 .mypy_cache/
