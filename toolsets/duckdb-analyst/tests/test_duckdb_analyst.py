@@ -51,7 +51,13 @@ def test_list_sources_advertises_nothing_untested():
     query-tested below on the same neighborhood-scale-bbox terms the
     curated geo tools use.
     """
-    tested = {"natural_earth_countries", "natural_earth_places", "overture_places"}
+    tested = {
+        "natural_earth_countries",
+        "natural_earth_places",
+        "overture_places",
+        "mur_sst",
+        "hrrr_temperature",
+    }
     advertised = {source["name"] for source in list_sources.invoke({})["sources"]}
     assert advertised == tested, (
         f"sources advertised but not query-tested: {advertised - tested}"
@@ -180,16 +186,16 @@ async def test_query_against_ad_hoc_public_parquet_url():
 async def test_query_against_ad_hoc_public_zarr_url():
     """Same shape as the parquet/CSV ad hoc URL support, for `zarr`.
 
-    The URL is the `duckdb-zarr` project's own README example (a small,
-    consolidated-metadata GPCP store) — chosen the same way the parquet
-    fixture above was, for a small stable public dataset.
+    The URL is one hour of NOAA's HRRR archive on AWS Open Data (a small,
+    consolidated-metadata store) — chosen the same way the parquet fixture
+    above was, for a small stable public dataset.
     """
     result = await query.ainvoke(
         {
             "sql": (
                 "SELECT name, dtype FROM read_zarr_metadata("
-                "'https://ncsa.osn.xsede.org/Pangeo/pangeo-forge/"
-                "gpcp-feedstock/gpcp.zarr')"
+                "'https://hrrrzarr.s3.amazonaws.com/sfc/20250101/"
+                "20250101_00z_anl.zarr/2m_above_ground/TMP')"
             ),
             "limit": 3,
         }
@@ -197,6 +203,39 @@ async def test_query_against_ad_hoc_public_zarr_url():
     assert not is_error(result)
     assert len(result["rows"]) > 0
     assert result["rows"][0]["name"]
+
+
+async def test_query_against_mur_sst_source():
+    """Exercises `mur_sst`'s own advertised `example_sql`, not a hand-copied
+    duplicate — if the catalog entry in `connection.py` ever drifts from
+    something that actually runs, this test catches it.
+
+    `mur_sst`'s example is `read_zarr_metadata` only, deliberately: a real
+    `read_zarr` pull of its `analysed_sst` variable was measured to take
+    over 45s regardless of `LIMIT` (see connection.py), so the catalog
+    steers callers toward the fast metadata call instead.
+    """
+    source = next(
+        s for s in list_sources.invoke({})["sources"] if s["name"] == "mur_sst"
+    )
+    result = await query.ainvoke({"sql": source["example_sql"], "limit": 5})
+    assert not is_error(result)
+    assert len(result["rows"]) > 0
+    assert result["rows"][0]["name"]
+
+
+async def test_query_against_hrrr_temperature_source():
+    """Exercises `hrrr_temperature`'s own advertised `example_sql` — unlike
+    `mur_sst` above, this one pulls real temperature values, verified fast
+    (a few seconds) against this store's small chunks.
+    """
+    source = next(
+        s for s in list_sources.invoke({})["sources"] if s["name"] == "hrrr_temperature"
+    )
+    result = await query.ainvoke({"sql": source["example_sql"], "limit": 5})
+    assert not is_error(result)
+    assert len(result["rows"]) > 0
+    assert result["rows"][0]["value"] is not None
 
 
 async def test_query_enforces_hard_row_cap_server_side():

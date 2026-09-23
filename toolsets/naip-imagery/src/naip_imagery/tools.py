@@ -362,5 +362,5 @@ async def _ollama_generate(
 TOOLS = [fetch_naip_image, interpret_image]
 
 # The image view renders the fetched JPEG inline in MCP Apps hosts (and the
-# bundled Chainlit agent) — without it the image exists only in session state.
+# runtime's bundled web client) — without it the image exists only in session state.
 VIEWS = {"fetch_naip_image": "image"}

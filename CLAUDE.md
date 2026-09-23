@@ -22,25 +22,23 @@ public functions with this project's system prompt).
 - `uv sync` once, then `./scripts/lint`, `./scripts/test`, `./scripts/format`.
 - New toolset: `uv run mcp-toolset new <name>` (from the runtime) — never
   hand-roll the layout. Add `--with-ui` for a toolset with a React view (see
-  README "Toolset UI views").
+  the runtime's CONSUMING.md §3).
 - Remove a toolset: `./scripts/remove-toolset <name>`.
 - Build toolset UIs: `./scripts/build-views` (needs node). Built view bundles
   live at `<package>/views/*.html`, are git-ignored, and must exist before
   `mcp-serve` or `build_server` aborts — the Dockerfile's node stage, the CI
   `ui` job, and this script rebuild them.
 - Local chat: `uv run uvicorn agent_app:app --port 8765` (from the repo root,
-  so `.env` is found) plus `cd web && npm ci && npm run dev`, with
-  `mcp-serve-local` running and `MCP_URL=http://localhost:8000/` (index root,
-  not `/mcp`). `agent_app:app` (not `mcp_agent_api.app:app`) is this repo's
-  own thin wrapper adding a data-grounding rule to the system prompt — see
-  `agent_app.py`. `web/` is a copy of the runtime's `examples/agui-events/web`
-  with only branding edits — re-diff it against that example on runtime bumps,
-  and never upgrade its `@ag-ui/client` independently of the runtime.
-- Chainlit host element (legacy, deployed chat only until Chainlit is
-  retired): `uv run mcp-agent install-elements` writes
-  `public/elements/McpView.jsx` from the runtime package. Git-ignored and not
-  vendored — re-run it after a runtime bump, or views won't render in
-  `mcp-agent-web` (it warns and starts anyway).
+  so `.env` is found), with `mcp-serve-local` running and
+  `MCP_URL=http://localhost:8000/` (index root, not `/mcp`); open
+  http://localhost:8765. `agent_app:app` (not `mcp_agent_api.app:app`) is
+  this repo's own thin wrapper: it adds a data-grounding rule to the system
+  prompt and mounts the runtime's bundled web client with this agent's
+  title and example questions (`UI`). There is no vendored frontend — a
+  change to the chat page's structure belongs upstream in the runtime's
+  `js/agent-ui`.
+- Only the toolsets and the index deploy. The hosted Chainlit chat was
+  removed with runtime 0.10; there is no hosted agent API yet.
 
 ## Safety
 

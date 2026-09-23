@@ -217,10 +217,55 @@ _THREADS = 2
 # to always filter on the `bbox` column. An unfiltered aggregate still times
 # out, which is the accepted MVP trade-off — a local extract (just another
 # CREATE VIEW here) remains the fix when this graduates from MVP.
-_OVERTURE_RELEASE = os.environ.get("OVERTURE_RELEASE", "2026-07-22.0")
+_OVERTURE_RELEASE = os.environ.get("OVERTURE_RELEASE", "2026-08-19.0")
 _OVERTURE_PLACES_PATH = (
     "s3://overturemaps-us-west-2/release/"
     f"{_OVERTURE_RELEASE}/theme=places/type=place/*.parquet"
+)
+
+# Two public Zarr array stores, catalogued (unlike Natural Earth/Overture)
+# as "table_function" sources rather than "view": `read_zarr*` has no `CREATE
+# VIEW`-compatible registration path (see the module docstring's "Zarr"
+# section), so these are read ad hoc, straight off the URLs below, by
+# `query`/`chart` at call time — not pre-registered against `CON` the way
+# `_register_views` below does for the other three sources.
+#
+# Both URLs were checked to actually work against this toolset's pinned
+# `zarr` extension build before being added here; several other well-known
+# public Zarr datasets were tried and rejected: `s3://noaa-nwm-retrospective-
+# 2-1-zarr-pds/chrtout.zarr` fails on an unsupported dtype (`|S1`), and
+# `s3://era5-pds/zarr`, `gs://gcp-public-data-arco-era5/...` and
+# `s3://nasanex/NEX-GDDP-CMIP6.zarr` all fail with "group metadata is
+# missing" (Zarr v3, or a store layout this extension version can't read).
+#
+# NASA JPL's MUR (Multi-scale Ultra-high Resolution) Level-4 sea surface
+# temperature, 0.01° daily global grid, 2002-06-01 to present, AWS Open Data
+# (anonymous, no credentials). Its `analysed_sst` data variable is chunked
+# `[6443, 100, 100]` — every 100x100 lat/lon tile stores its FULL 6443-step
+# time series in one chunk, ~123 MB (int16) — so a `read_zarr` pull of
+# `analysed_sst` downloads at least one whole chunk regardless of `LIMIT`:
+# verified repeatedly slower than 45s for as few as 5 rows, against a host
+# where `read_zarr_metadata`/`read_zarr_groups` (no chunk data, just JSON
+# headers) reliably return in under 2s. That's why this source's
+# `example_sql` below only ever calls `read_zarr_metadata`.
+_MUR_SST_URL = "s3://mur-sst/zarr"
+
+# NOAA's HRRR (High-Resolution Rapid Refresh) analysis of 2 m air temperature
+# over the contiguous USA, 3 km grid, for one fixed hour (2025-01-01 00z),
+# from the AWS Open Data `hrrrzarr` archive (anonymous). The bucket is in
+# us-west-1 while `s3_region` below is locked to us-east-1, so this uses the
+# bucket's https:// endpoint rather than an s3:// URL. Its data array is
+# chunked `[150, 150]` (~90 KB, float32), so a `LIMIT`-bounded `read_zarr`
+# pull reads real values in a few seconds, and `example_sql` does that.
+#
+# This replaced NOAA GPCP precipitation on Pangeo's NCSA OSN pod
+# (ncsa.osn.xsede.org), which stopped answering (connections time out; other
+# OSN pods answer, and none holds a copy). CMIP6 precipitation on AWS
+# (`s3://cmip6-pds`) was also tried: its `[600, 192, 288]` chunks (~130 MB)
+# made a 5-row `read_zarr` pull run past 280s.
+_HRRR_TMP_URL = (
+    "https://hrrrzarr.s3.amazonaws.com/sfc/20250101/20250101_00z_anl.zarr/"
+    "2m_above_ground/TMP"
 )
 
 
@@ -532,6 +577,135 @@ _COLUMN_NOTES: dict[str, dict[str, ColumnInfo]] = {
     },
 }
 
+#: Zarr sources aren't registered views (see `_MUR_SST_URL` above), so their
+#: columns are hand-authored from a live `read_zarr_metadata`/`read_zarr`
+#: call against the URLs above, rather than introspected via `_describe_view`.
+#: Built as their own statements, like the view SQL above, so the S608
+#: suppression (same false positive: the only interpolated values are
+#: module constants, never caller input) has an unambiguous line to attach
+#: to instead of landing inside a dict literal.
+_MUR_SST_EXAMPLE_SQL = f"""
+    SELECT name, dims, dtype, shape, chunk_shape, role
+    FROM read_zarr_metadata('{_MUR_SST_URL}')
+""".strip()  # noqa: S608
+_HRRR_TMP_EXAMPLE_SQL = f"""
+    SELECT *
+    FROM read_zarr('{_HRRR_TMP_URL}', array_path => '2m_above_ground/TMP')
+    LIMIT 20
+""".strip()  # noqa: S608
+
+_ZARR_SOURCES: list[SourceInfo] = [
+    SourceInfo(
+        name="mur_sst",
+        kind="table_function",
+        description=(
+            "NASA JPL MUR (Multi-scale Ultra-high Resolution) Level-4 sea "
+            "surface temperature: 0.01 degree daily global grid, "
+            "2002-06-01 to present, read remotely from AWS Open Data "
+            f"({_MUR_SST_URL}, anonymous). LARGE: `analysed_sst` is int16, "
+            "scaled (`sst_kelvin = analysed_sst * 0.001 + 298.15`, see "
+            "each variable's `attrs` for the exact scale_factor/add_offset), "
+            "and chunked so every 100x100 lat/lon tile stores its full "
+            "6443-step time series in one ~123 MB chunk — any `read_zarr` "
+            "pull of `analysed_sst` downloads at least one whole chunk "
+            "regardless of `LIMIT` and was measured to take over 45s. Call "
+            "`read_zarr_metadata`/`read_zarr_groups` first (both fast, no "
+            "chunk data) to see what's available; only pull `analysed_sst` "
+            "itself when the caller genuinely needs SST values and can "
+            "tolerate a large, slow download. Coordinate arrays (`lat`, "
+            "`lon`, `time`) cannot be read via `read_zarr` at all — a known "
+            "extension bug: reading a variable whose name matches its own "
+            "dimension name errors with 'duplicate column name'."
+        ),
+        example_sql=_MUR_SST_EXAMPLE_SQL,
+        columns=[
+            ColumnInfo(
+                name="name",
+                type="VARCHAR",
+                description=(
+                    "Variable/coordinate name inside the store, e.g. "
+                    "`analysed_sst`, `lat`, `lon`, `time`."
+                ),
+            ),
+            ColumnInfo(
+                name="dims",
+                type="VARCHAR",
+                description="JSON array of this variable's dimension names, in order.",
+            ),
+            ColumnInfo(
+                name="dtype",
+                type="VARCHAR",
+                description="Zarr/NumPy dtype string, e.g. `int16 / <i2`.",
+            ),
+            ColumnInfo(
+                name="shape",
+                type="VARCHAR",
+                description="JSON array giving the full length along each dimension.",
+            ),
+            ColumnInfo(
+                name="chunk_shape",
+                type="VARCHAR",
+                description=(
+                    "JSON array giving the on-disk chunk size along each "
+                    "dimension — see this source's description for why "
+                    "`analysed_sst`'s chunking makes it an expensive read."
+                ),
+            ),
+            ColumnInfo(
+                name="attrs",
+                type="VARCHAR",
+                description=(
+                    "JSON object of the variable's Zarr attributes (units, "
+                    "long_name, scale_factor/add_offset, valid_min/max, ...)."
+                ),
+            ),
+            ColumnInfo(
+                name="role",
+                type="VARCHAR",
+                description="'data' for a data variable, 'coord' for a dimension coordinate.",
+            ),
+        ],
+    ),
+    SourceInfo(
+        name="hrrr_temperature",
+        kind="table_function",
+        description=(
+            "NOAA HRRR (High-Resolution Rapid Refresh) analysis of 2 m air "
+            "temperature over the contiguous USA: 3 km grid, one fixed hour "
+            f"(2025-01-01 00:00 UTC), read remotely from AWS Open Data "
+            f"({_HRRR_TMP_URL}, anonymous, plain https). Small chunks "
+            "(150x150 cells) make a `LIMIT`-bounded `read_zarr` pull fast (a "
+            "few seconds). Rows come back in the store's on-disk order (one "
+            "corner of the grid first), not a spatial sample. Coordinates "
+            "are metres in HRRR's Lambert conformal projection, not "
+            "longitude/latitude, and values are Kelvin (subtract 273.15 for "
+            "Celsius). The data array's path is `2m_above_ground/TMP`, and "
+            "`read_zarr` returns its values in a column named `value`."
+        ),
+        example_sql=_HRRR_TMP_EXAMPLE_SQL,
+        columns=[
+            ColumnInfo(
+                name="projection_y_coordinate",
+                type="DOUBLE",
+                description="Northing in metres, HRRR Lambert conformal projection.",
+                good_for=["y"],
+            ),
+            ColumnInfo(
+                name="projection_x_coordinate",
+                type="DOUBLE",
+                description="Easting in metres, HRRR Lambert conformal projection.",
+                good_for=["x"],
+            ),
+            ColumnInfo(
+                name="value",
+                type="FLOAT",
+                description="Air temperature 2 m above ground, Kelvin.",
+                good_for=["y", "color"],
+            ),
+        ],
+    ),
+]
+
 _VIEW_DESCRIPTIONS = {
     "natural_earth_countries": (
         "Natural Earth 1:110m country polygons with basic demographic/"
@@ -588,7 +762,7 @@ def _describe_view(con: duckdb.DuckDBPyConnection, view: str) -> list[ColumnInfo
 
 
 def _build_sources(con: duckdb.DuckDBPyConnection) -> list[SourceInfo]:
-    return [
+    views = [
         SourceInfo(
             name=view,
             kind="view",
@@ -602,6 +776,7 @@ def _build_sources(con: duckdb.DuckDBPyConnection) -> list[SourceInfo]:
             "overture_places",
         )
     ]
+    return [*views, *_ZARR_SOURCES]
 
 
 async def execute_capped(
