@@ -10,11 +10,13 @@ cross-toolset contract — the area arrives from whatever published an
 """
 
 import base64
+from datetime import datetime, timezone
 from typing import Any
 
 import httpx
 import numpy as np
-from shapely.geometry import shape
+from pystac.item import Item
+from shapely.geometry import box, mapping, shape
 
 from mcp_runtime.declarations import not_authored, output_fields
 from mcp_runtime.tool_result import is_error
@@ -22,7 +24,9 @@ from mcp_runtime.tool_result import is_error
 import naip_imagery.tools as tools_module
 from naip_imagery.tools import (
     _MAX_DIMENSION_PX,
+    _MAX_MOSAIC_ITEMS,
     _area_geometry,
+    _render_mosaic,
     _resolution_for,
     _stretch_to_uint8,
     fetch_naip_image,
@@ -116,6 +120,81 @@ def test_stretch_to_uint8_full_range():
 def test_stretch_to_uint8_constant_input():
     stretched = _stretch_to_uint8(np.full((4, 4, 3), 7.0))
     assert stretched.dtype == np.uint8
+
+
+def _item(item_id: str, footprint: Any, day: int) -> Item:
+    return Item(
+        id=item_id,
+        geometry=mapping(footprint),
+        bbox=list(footprint.bounds),
+        datetime=datetime(2023, 6, day, tzinfo=timezone.utc),
+        properties={"proj:epsg": 32618},
+    )
+
+
+def _stub_load(monkeypatch, loads: list[str]) -> None:
+    """Replace the raster read: each item fills the pixels its footprint's
+    west-east span covers, with a value derived from its id."""
+
+    def fake_load(item, geobox):
+        loads.append(item.id)
+        height, width = geobox.shape.yx
+        west, _, east, _ = shape(item.geometry).bounds
+        frame_west, _, frame_east, _ = geobox.geographic_extent.boundingbox
+        span = frame_east - frame_west
+        start = round((max(west, frame_west) - frame_west) / span * width)
+        stop = round((min(east, frame_east) - frame_west) / span * width)
+        rgb = np.full((height, width, 3), np.nan, dtype="float32")
+        rgb[:, start:stop] = float(len(loads) * 50)
+        return rgb
+
+    monkeypatch.setattr(tools_module, "_load_rgb", fake_load)
+
+
+def test_mosaic_fills_from_several_items(monkeypatch):
+    area = box(-77.01, 38.90, -76.99, 38.91)
+    west = _item("west", box(-77.02, 38.89, -77.00, 38.92), day=2)
+    east = _item("east", box(-77.00, 38.89, -76.98, 38.92), day=1)
+    loads: list[str] = []
+    _stub_load(monkeypatch, loads)
+
+    _, _, _, used, coverage = _render_mosaic([east, west], area, 10.0)
+
+    assert [item.id for item in used] == ["west", "east"]  # newest first
+    assert coverage > 0.99
+
+
+def test_mosaic_stops_once_covered(monkeypatch):
+    area = box(-77.01, 38.90, -76.99, 38.91)
+    newest = _item("newest", box(-77.02, 38.89, -76.98, 38.92), day=3)
+    older = _item("older", box(-77.02, 38.89, -76.98, 38.92), day=1)
+    loads: list[str] = []
+    _stub_load(monkeypatch, loads)
+
+    _, _, _, used, coverage = _render_mosaic([older, newest], area, 10.0)
+
+    assert loads == ["newest"] and coverage == 1.0
+
+
+def test_mosaic_caps_item_count(monkeypatch):
+    # Thin strips, so no small set of items covers the area.
+    area = box(-77.01, 38.90, -76.99, 38.91)
+    step = 0.02 / 20
+    strips = [
+        _item(
+            f"s{i}",
+            box(-77.01 + i * step, 38.89, -77.01 + (i + 1) * step, 38.92),
+            day=i + 1,
+        )
+        for i in range(20)
+    ]
+    loads: list[str] = []
+    _stub_load(monkeypatch, loads)
+
+    _, _, _, used, coverage = _render_mosaic(strips, area, 10.0)
+
+    assert len(loads) == _MAX_MOSAIC_ITEMS == len(used)
+    assert coverage < 1.0
 
 
 async def test_fetch_rejects_bad_dates():

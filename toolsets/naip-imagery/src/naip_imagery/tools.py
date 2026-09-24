@@ -20,7 +20,10 @@ provider drives the chat.
 
 Where the original aborted on rasters larger than 512x512, this port picks
 the load resolution from the area's size instead, so any area the upstream
-buffer cap allows renders — coarser, never bigger.
+buffer cap allows renders — coarser, never bigger. And where the original
+rendered only the newest item — often just a corner of the area when it
+straddles flight lines or quarter quads — this port mosaics items newest
+first until every pixel has data, up to ``_MAX_MOSAIC_ITEMS``.
 """
 
 import asyncio
@@ -38,6 +41,7 @@ import numpy as np
 import planetary_computer
 import xarray as xr
 from langchain_core.tools import tool
+from odc.geo.geobox import GeoBox
 from odc.geo.geom import Geometry
 from odc.stac import stac_load
 from PIL import Image
@@ -62,6 +66,11 @@ _NATIVE_RESOLUTION_M = 1.0
 #: raster fits this budget, whatever the area's size — the image feeds a
 #: vision model and a chat view, neither of which wants more pixels.
 _MAX_DIMENSION_PX = 512
+
+#: Most STAC items one mosaic loads. Each is a separate raster read, so this
+#: bounds the tool's latency when the area straddles many quarter quads or
+#: the matches have gaps no item fills.
+_MAX_MOSAIC_ITEMS = 6
 
 #: Meters per degree of latitude (and of longitude at the equator).
 _M_PER_DEGREE = 111_320.0
@@ -89,6 +98,8 @@ class NaipImage(TypedDict):
     item_id: str
     item_datetime: str
     resolution_m: float
+    item_count: int
+    coverage: float
 
 
 class FetchNaipImageResult(ToolResult):
@@ -135,7 +146,8 @@ def _stretch_to_uint8(arr: np.ndarray) -> np.ndarray:
     if vmax <= vmin:
         vmin, vmax = float(np.nanmin(arr)), float(np.nanmax(arr))
     arr = np.clip((arr - vmin) / (vmax - vmin + 1e-6), 0, 1)
-    return (arr * 255).astype("uint8")
+    # NaN marks pixels no item covered; they render black.
+    return (np.nan_to_num(arr, nan=0.0) * 255).astype("uint8")
 
 
 def _item_crs(item: Item) -> str:
@@ -146,10 +158,11 @@ def _item_crs(item: Item) -> str:
     return f"EPSG:{item.properties['proj:epsg']}"
 
 
-def _render_rgb_jpeg(
-    item: Item, geometry: BaseGeometry, resolution: float
-) -> tuple[str, int, int]:
-    """Load one item's RGB over the geometry and encode it as base64 JPEG.
+def _load_rgb(item: Item, geobox: GeoBox) -> np.ndarray:
+    """One item's RGB on the shared grid as (y, x, band) float32.
+
+    Pixels outside the item come back NaN (the bands declare no nodata or
+    dtype, so odc.stac loads float with NaN fill).
 
     Blocking (rasterio reads); callers run it in a thread.
     """
@@ -165,23 +178,82 @@ def _render_rgb_jpeg(
         ds: xr.Dataset = stac_load(
             [item],
             bands=["red", "green", "blue"],
-            geopolygon=Geometry(mapping(geometry), "EPSG:4326"),
-            resolution=resolution,
+            geobox=geobox,
             executor=executor,
-            crs=_item_crs(item),
         )
 
     rgb = xr.concat(
         [ds["red"].isel(time=0), ds["green"].isel(time=0), ds["blue"].isel(time=0)],
         dim="band",
     ).transpose("y", "x", "band")
-    arr = _stretch_to_uint8(rgb.values)
+    return np.asarray(rgb.values)
+
+
+def _render_mosaic(
+    items: list[Item], geometry: BaseGeometry, resolution: float
+) -> tuple[str, int, int, list[Item], float]:
+    """Mosaic items newest first until every pixel has data, as base64 JPEG.
+
+    Loads one item at a time onto a shared grid and keeps only the pixels
+    still empty, so newer acquisitions win where items overlap. Stops when
+    no pixel is empty or after ``_MAX_MOSAIC_ITEMS`` loads. Items whose
+    footprint adds nothing to the ones already loaded are skipped unread.
+    Returns the JPEG, its size, the items used and the covered fraction.
+
+    Blocking (rasterio reads); callers run it in a thread.
+    """
+    ordered = sorted(items, key=lambda entry: str(entry.datetime), reverse=True)
+    geobox = GeoBox.from_geopolygon(
+        Geometry(mapping(geometry), "EPSG:4326"),
+        resolution=resolution,
+        crs=_item_crs(ordered[0]),
+    )
+    target = geometry.envelope
+    canvas: np.ndarray | None = None
+    missing = np.ones(geobox.shape.yx, dtype=bool)
+    covered: BaseGeometry | None = None
+    used: list[Item] = []
+
+    for item in ordered:
+        if len(used) >= _MAX_MOSAIC_ITEMS or not missing.any():
+            break
+        if item.geometry is None:
+            continue
+        footprint = shape(item.geometry).intersection(target)
+        if footprint.is_empty or (
+            covered is not None
+            and footprint.difference(covered).area < 1e-3 * target.area
+        ):
+            continue
+        rgb = _load_rgb(item, geobox).astype("float32")
+        # Zero in every band is a scene collar, not imagery.
+        has_data = ~np.isnan(rgb).any(axis=-1) & (rgb != 0).any(axis=-1)
+        fill = missing & has_data
+        if canvas is None:
+            canvas = np.full(rgb.shape, np.nan, dtype="float32")
+        if fill.any():
+            canvas[fill] = rgb[fill]
+            missing &= ~fill
+            used.append(item)
+        covered = footprint if covered is None else covered.union(footprint)
+        logger.debug(
+            "fetch_naip_image: %s filled %d px, %d px still empty",
+            item.id,
+            int(fill.sum()),
+            int(missing.sum()),
+        )
+
+    if canvas is None or not used:
+        raise ValueError("no matching NAIP item has pixels over the area")
+
+    arr = _stretch_to_uint8(canvas)
 
     height, width = arr.shape[:2]
     buf = BytesIO()
     Image.fromarray(arr).save(buf, format="JPEG", quality=85)
     encoded = base64.b64encode(buf.getvalue()).decode("ascii")
-    return encoded, width, height
+    coverage = 1.0 - float(missing.mean())
+    return encoded, width, height, used, coverage
 
 
 @tool
@@ -196,8 +268,10 @@ async def fetch_naip_image(
     Searches Microsoft Planetary Computer for NAIP acquisitions between
     `start_date` and `end_date` (YYYY-MM-DD; NAIP flies each state every 2-3
     years, so span a few years). The area comes from session state (published
-    by `get_search_area`, or any tool publishing an area of interest). The
-    rendered image is published for `interpret_image` to describe.
+    by `get_search_area`, or any tool publishing an area of interest).
+    Acquisitions are mosaicked newest first until the area is covered, so
+    the image can mix flight dates. The rendered image is published for
+    `interpret_image` to describe.
     """
     logger.debug("fetch_naip_image: %s/%s", start_date, end_date)
     try:
@@ -241,40 +315,53 @@ async def fetch_naip_image(
             "date range, or check the area is in the USA.",
         )
 
-    # Newest acquisition wins; one item is enough for a preview (mosaicking
-    # across flight lines is out of scope, as it was in geo-assistant).
-    item = max(items, key=lambda entry: str(entry.datetime))
     resolution = _resolution_for(geometry)
     try:
-        encoded, width, height = await asyncio.to_thread(
-            _render_rgb_jpeg, item, geometry, resolution
+        encoded, width, height, used, coverage = await asyncio.to_thread(
+            _render_mosaic, items, geometry, resolution
         )
     except Exception as error:
         logger.warning("fetch_naip_image: raster load failed: %s", error)
         return ToolError(error="load_failed", detail=str(error))
 
-    item_datetime = str(item.datetime.date()) if item.datetime else "unknown date"
+    dates = sorted({str(item.datetime.date()) for item in used if item.datetime})
+    item_datetime = (
+        (dates[0] if len(dates) == 1 else f"{dates[0]} to {dates[-1]}")
+        if dates
+        else "unknown date"
+    )
+    item_ids = ", ".join(item.id for item in used)
     logger.debug(
-        "fetch_naip_image: rendered %s (%s) as %dx%d at %.1f m/px",
-        item.id,
+        "fetch_naip_image: rendered %d item(s) (%s) as %dx%d at %.1f m/px, "
+        "%.0f%% covered",
+        len(used),
         item_datetime,
         width,
         height,
         resolution,
+        coverage * 100,
+    )
+    gaps = (
+        ""
+        if coverage >= 0.999
+        else f" Only {coverage:.0%} of the area has imagery; the rest is "
+        "black — widen the date range to fill it."
     )
     return FetchNaipImageResult(
-        message=f"Rendered NAIP acquisition {item.id} ({item_datetime}) as a "
-        f"{width}x{height} RGB image at {resolution:.1f} m/pixel "
-        f"({len(items)} acquisition(s) matched). Call interpret_image to "
-        "describe it.",
+        message=f"Rendered a mosaic of {len(used)} NAIP acquisition(s) "
+        f"({item_ids}; {item_datetime}) as a {width}x{height} RGB image at "
+        f"{resolution:.1f} m/pixel ({len(items)} acquisition(s) matched).{gaps} "
+        "Call interpret_image to describe it.",
         naip_image=NaipImage(
             media_type="image/jpeg",
             base64=encoded,
             width=width,
             height=height,
-            item_id=item.id,
+            item_id=item_ids,
             item_datetime=item_datetime,
             resolution_m=round(resolution, 2),
+            item_count=len(used),
+            coverage=round(coverage, 3),
         ),
     )
 
