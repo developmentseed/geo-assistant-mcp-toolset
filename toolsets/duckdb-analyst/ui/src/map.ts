@@ -8,6 +8,8 @@
 import { onData } from "@developmentseed/mcp-view";
 import L from "leaflet";
 import "leaflet/dist/leaflet.css";
+import "maplibre-gl/dist/maplibre-gl.css";
+import "@maplibre/maplibre-gl-leaflet";
 import type { Feature, FeatureCollection } from "geojson";
 
 import "./styles.css";
@@ -21,12 +23,12 @@ interface MapResult {
   places?: FeatureCollection;
 }
 
-// Carto's free basemaps, matched to the color scheme; attribution per their
-// terms plus OSM's.
-const TILE_URL = dark
-  ? "https://basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png"
-  : "https://basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png";
-const ATTRIBUTION = "&copy; OpenStreetMap contributors &copy; CARTO";
+// OpenFreeMap vector basemaps (no key, no usage limits), matched to the color
+// scheme. MapLibre draws them inside a Leaflet layer; the style JSON carries
+// its own OpenFreeMap / OpenMapTiles / OSM attribution.
+const STYLE_URL = dark
+  ? "https://tiles.openfreemap.org/styles/dark"
+  : "https://tiles.openfreemap.org/styles/positron";
 
 const root = document.getElementById("root")!;
 
@@ -85,7 +87,7 @@ function render(data: MapResult): void {
   view.append(host);
 
   const map = L.map(host, { zoomControl: true });
-  L.tileLayer(TILE_URL, { maxZoom: 19, attribution: ATTRIBUTION }).addTo(map);
+  L.maplibreGL({ style: STYLE_URL }).addTo(map);
 
   const collection: FeatureCollection = { type: "FeatureCollection", features };
   const layer = L.geoJSON(collection, {
