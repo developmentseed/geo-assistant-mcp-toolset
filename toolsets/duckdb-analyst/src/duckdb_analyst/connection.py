@@ -158,6 +158,7 @@ model.
 """
 
 import asyncio
+import atexit
 import logging
 import os
 import threading
@@ -434,7 +435,7 @@ def _register_views(con: duckdb.DuckDBPyConnection) -> None:
     con.execute(overture_sql)
 
 
-def _warm_overture_footers(con: duckdb.DuckDBPyConnection) -> None:
+def _warm_overture_footers(cursor: duckdb.DuckDBPyConnection) -> None:
     """Pull every Overture parquet footer into the metadata cache, once.
 
     A stats-only count against an empty bbox touches each file's row-group
@@ -461,7 +462,6 @@ def _warm_overture_footers(con: duckdb.DuckDBPyConnection) -> None:
         "(budget %.0fs; queries arriving before it finishes run slower)",
         LOOKUP_TIMEOUT_SECONDS,
     )
-    cursor = con.cursor()
     timer = threading.Timer(LOOKUP_TIMEOUT_SECONDS, cursor.interrupt)
     timer.start()
     try:
@@ -842,10 +842,25 @@ async def execute_capped(
 CON = _build_connection()
 SOURCES = _build_sources(CON)
 
-#: Kicked off at import, joined by nothing: tool calls that beat it simply
-#: run slower (see ``_warm_overture_footers``). Tests join it to measure
+#: Kicked off at import, joined only at exit (``_stop_footer_warmup``): tool
+#: calls that beat it simply run slower (see ``_warm_overture_footers``). Tests join it to measure
 #: warm-path behavior deterministically.
+_FOOTER_WARMUP_CURSOR = CON.cursor()
 FOOTER_WARMUP = threading.Thread(
-    target=_warm_overture_footers, args=(CON,), daemon=True
+    target=_warm_overture_footers, args=(_FOOTER_WARMUP_CURSOR,), daemon=True
 )
 FOOTER_WARMUP.start()
+
+
+@atexit.register
+def _stop_footer_warmup() -> None:
+    """Interrupt the warmup and wait for it before the interpreter shuts down.
+
+    A daemon thread still inside ``cursor.execute`` when Python finalizes
+    makes DuckDB's C++ runtime abort ("terminate called without an active
+    exception", exit 134). Any short-lived import of this module can hit
+    that — e.g. CI's ``build_server`` check. atexit runs before daemon
+    threads are torn down, so interrupting here ends the scan cleanly.
+    """
+    _FOOTER_WARMUP_CURSOR.interrupt()
+    FOOTER_WARMUP.join(timeout=10)
