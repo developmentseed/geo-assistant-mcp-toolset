@@ -65,13 +65,19 @@ DATA_PROMPT = (
     "Answer counts, totals, rankings and filters with SQL (COUNT, SUM, GROUP "
     "BY, ORDER BY ... LIMIT), not by counting or reading through rows. The row "
     "count of a truncated result, or of a place list that says more exist, is "
-    "not the total. Session state cannot be queried with SQL: to filter or "
-    "aggregate a result again, run a new query. Use inspect_state to read "
+    "not the total. When a filter needs an attribute that another source "
+    "holds, such as a country's continent, join the sources rather than "
+    "approximate it with a coordinate box. Session state cannot be queried "
+    "with SQL, and an @state handle inside SQL text is a syntax error: to "
+    "filter or aggregate a result again, run a new query. Use inspect_state to read "
     "specific values of a result you already have, not to aggregate it. A new "
     "query replaces the previous query's rows, so read what you need from one "
     "result before you run the next in the same turn, or answer both in one "
     "SQL statement. Call list_sources before you write SQL against a source "
-    "whose columns you have not seen in this conversation."
+    "whose columns you have not seen in this conversation. Chart a query over "
+    "a source, never values you type into the SQL yourself. A table, chart, "
+    "map or image that a tool result renders is already in front of the user, "
+    "so do not call another tool only to show the same data again."
 )
 
 SYSTEM_PROMPT = with_interrupt_gate_prompt(
@@ -80,15 +86,24 @@ SYSTEM_PROMPT = with_interrupt_gate_prompt(
 )
 
 #: The web client's header and opening screen. Each example is a button that
-#: sends the question, and each one exercises a different tool chain.
+#: sends the question. There is one per inhabited continent, each in a
+#: different language the chat model supports, and each one exercises a
+#: different tool chain: aerial imagery and the vision model, places on a
+#: map, an Overture aggregate, a count and a ranking, a join across two
+#: sources, and a plain comparison. NAIP covers the USA only, so the imagery
+#: example is the North American one.
 UI = UiConfig(
     title="geo-assistant",
     tagline="Places, maps, aerial imagery and spatial SQL",
     examples=(
-        "Find the Golden Gate Bridge and show me cafes within 1 km.",
-        "Get NAIP imagery around the Golden Gate Bridge and describe what you see.",
-        "Chart the 10 most populated places in France.",
-        "What data sources can you query?",
+        "Analiza la zona alrededor del Field Museum de Chicago. ¿Qué podemos ver allí?",
+        "Encontre o Mercado Municipal de São Paulo e mostre os restaurantes "
+        "a menos de 500 m.",
+        "Welche Arten von Orten gibt es am häufigsten rund um das "
+        "Brandenburger Tor? Zeig die Top 10 als Diagramm.",
+        "Afrika ina nchi ngapi, na ni nchi tano zipi zenye watu wengi zaidi?",
+        "アジアで人口が最も多い都市トップ10をグラフで見せてください。",
+        "Compare Australia and New Zealand: population, GDP and GDP per person.",
     ),
 )
 

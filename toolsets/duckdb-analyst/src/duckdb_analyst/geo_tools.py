@@ -206,14 +206,18 @@ async def get_place(
 
 @tool
 def get_search_area(
-    buffer_km: float, place: Annotated[dict, NotAuthored()]
+    place: Annotated[dict, NotAuthored()], buffer_km: float = 0.25
 ) -> SearchAreaResult | ToolError:
     """Buffer the previously found place by a radius in km, publishing the
     result as the area of interest for `places_within_area` (or any other
     tool that takes one).
 
-    `buffer_km` is capped at 25 km: the area drives a remote Overture scan,
-    and a larger one is a guaranteed timeout rather than a bigger answer.
+    Omit `buffer_km` to use 0.25 km. Pass a value only when the question
+    names a distance or the thing to show is larger than about 500 m across:
+    a larger area makes a slower place scan and a coarser aerial image
+    (0.25 km renders at 1 m/pixel, 1 km at about 4 m/pixel). It is capped at
+    25 km, as the area drives a remote Overture scan and a larger one is a
+    guaranteed timeout rather than a bigger answer.
     """
     logger.debug("get_search_area: buffer_km=%s", buffer_km)
     if not 0 < buffer_km <= _MAX_BUFFER_KM:
@@ -279,7 +283,12 @@ async def places_within_area(
 
     The area comes from session state (published by `get_search_area`, or
     any tool publishing an area of interest). Returns up to `limit` places
-    (max 100) as a GeoJSON FeatureCollection plus a readable list.
+    (max 100) as a GeoJSON FeatureCollection plus a readable list, which the
+    user sees on a map. `category` is exactly one slug: there is no wildcard.
+    To count or compare categories in an area, `query` `overture_places`
+    and GROUP BY `categories.primary` instead. SQL cannot read session
+    state, so filter its `bbox` columns on a box of numbers around the
+    place's coordinates (from `inspect_state` of the place).
     """
     requested = category
     category = _CATEGORY_ALIASES.get(category.lower().strip(), category.lower().strip())

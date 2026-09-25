@@ -271,6 +271,10 @@ async def fetch_naip_image(
     Acquisitions are mosaicked newest first until the area is covered, so
     the image can mix flight dates. The rendered image is published for
     `interpret_image` to describe.
+
+    The image is at most 512 px wide, so detail falls as the area grows: a
+    0.25 km buffer renders at the native 1 m/pixel, a 1 km buffer at about
+    4 m/pixel. Keep the area to what the question needs to see.
     """
     logger.debug("fetch_naip_image: %s/%s", start_date, end_date)
     try:
