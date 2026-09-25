@@ -169,6 +169,9 @@ async def test_places_within_area_full_chain():
     assert 0 < len(features) <= 5
     assert all(f["properties"]["category"] == "cafe" for f in features)
     assert "cafe" in result["message"]
+    # A busy half-kilometer of Lisbon has more than five cafes, so the
+    # message must not present five as the total.
+    assert "not the total" in result["message"]
 
 
 async def test_places_within_area_rejects_non_geojson_area():

@@ -206,14 +206,18 @@ async def get_place(
 
 @tool
 def get_search_area(
-    buffer_km: float, place: Annotated[dict, NotAuthored()]
+    place: Annotated[dict, NotAuthored()], buffer_km: float = 0.25
 ) -> SearchAreaResult | ToolError:
     """Buffer the previously found place by a radius in km, publishing the
     result as the area of interest for `places_within_area` (or any other
     tool that takes one).
 
-    `buffer_km` is capped at 25 km: the area drives a remote Overture scan,
-    and a larger one is a guaranteed timeout rather than a bigger answer.
+    Omit `buffer_km` to use 0.25 km. Pass a value only when the question
+    names a distance or the thing to show is larger than about 500 m across:
+    a larger area makes a slower place scan and a coarser aerial image
+    (0.25 km renders at 1 m/pixel, 1 km at about 4 m/pixel). It is capped at
+    25 km, as the area drives a remote Overture scan and a larger one is a
+    guaranteed timeout rather than a bigger answer.
     """
     logger.debug("get_search_area: buffer_km=%s", buffer_km)
     if not 0 < buffer_km <= _MAX_BUFFER_KM:
@@ -279,7 +283,12 @@ async def places_within_area(
 
     The area comes from session state (published by `get_search_area`, or
     any tool publishing an area of interest). Returns up to `limit` places
-    (max 100) as a GeoJSON FeatureCollection plus a readable list.
+    (max 100) as a GeoJSON FeatureCollection plus a readable list, which the
+    user sees on a map. `category` is exactly one slug: there is no wildcard.
+    To count or compare categories in an area, `query` `overture_places`
+    and GROUP BY `categories.primary` instead. SQL cannot read session
+    state, so filter its `bbox` columns on a box of numbers around the
+    place's coordinates (from `inspect_state` of the place).
     """
     requested = category
     category = _CATEGORY_ALIASES.get(category.lower().strip(), category.lower().strip())
@@ -334,7 +343,9 @@ async def places_within_area(
         north,
         category,
         json.dumps(mapping(geometry)),
-        limit,
+        # One past the limit, dropped below: it tells a full page from a
+        # truncated one, so "10 places" is never reported as the total.
+        limit + 1,
     ]
     try:
         _columns, rows = await execute_capped(
@@ -348,6 +359,8 @@ async def places_within_area(
             )
         logger.warning("places_within_area query failed: %s", error)
         return ToolError(error="query_failed", detail=str(error))
+    truncated = len(rows) > limit
+    rows = rows[:limit]
 
     collection: dict[str, Any] = {
         "type": "FeatureCollection",
@@ -376,8 +389,14 @@ async def places_within_area(
         suffix = f" - {website}" if website else ""
         lines.append(f"  • {properties['name']}{suffix}")
     listing = "\n".join(lines)
+    found = (
+        f"Showing the first {len(rows)} {category!r} places; more exist in the "
+        "area, so this is not the total"
+        if truncated
+        else f"Found {len(rows)} {category!r} place(s), the complete set in the area"
+    )
     return PlacesWithinAreaResult(
-        message=f"Found {len(rows)} {category!r} place(s):\n{listing}",
+        message=f"{found}:\n{listing}",
         places=collection,
     )
 

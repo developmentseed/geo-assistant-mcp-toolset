@@ -82,12 +82,12 @@ ways. Some examples:
 ```
  browser ──▶ agent API (agent_app.py) ──▶ MCP toolsets ──────────▶ data
  chat page   chat model + system prompt   duckdb-analyst  (SQL)    Overture, Natural Earth, Zarr, URLs
-                                          naip-imagery    (images) Planetary Computer, Ollama vision model
+                                          naip-imagery    (images) Planetary Computer, OpenRouter vision model
 ```
 
 1. You type a question in the chat page.
-2. The agent API sends it to a chat model (Mistral by default) with a list of
-   tools.
+2. The agent API sends it to a chat model (Gemma 4 on OpenRouter by default)
+   with a list of tools.
 3. The model calls tools. Each toolset is a separate MCP server.
 4. The tools send back a short text for the model and structured data for the
    page. The page shows the data as a map, an image, a table or a chart.
@@ -105,18 +105,18 @@ You need:
 - [uv](https://docs.astral.sh/uv/) (Python 3.12 or 3.13),
 - [Node.js](https://nodejs.org) 22.12 or later, to build the views (map,
   image, table and chart),
-- an API key for a chat model. The repo installs the Mistral provider. For
-  another provider, see the comments in `.example.env`.
-- (optional) [Ollama](https://ollama.com), to describe aerial images. The
-  default vision model runs in Ollama's cloud, so you do not need a GPU.
+- an [OpenRouter](https://openrouter.ai) API key. One key operates the
+  chat model and the vision model that describes aerial images. Both models
+  run on OpenRouter, so you do not need a GPU. For a different provider, see
+  the comments in `.example.env`.
 
 ### Set up (one time)
 
 ```sh
 uv sync                        # install Python dependencies into .venv
-cp .example.env .env           # then set PROVIDER_MODEL and PROVIDER_API_KEY
+cp .example.env .env           # then set PROVIDER_API_KEY and OPENROUTER_API_KEY
+                               # (the same OpenRouter key)
 ./scripts/build-views          # build the map, image, table and chart views
-ollama signin && ollama pull gemma4:cloud   # optional: image descriptions
 ```
 
 ### Start
@@ -139,7 +139,7 @@ buttons. Select one to start.
 | `mcp-serve-local` does not start and names a missing view | Run `./scripts/build-views`. |
 | The agent API stops at startup | `PROVIDER_MODEL` or `PROVIDER_API_KEY` is not set in `.env`. |
 | The assistant has no tools | Set `MCP_URL=http://localhost:8000/` (the index root, not `.../mcp`), and start `mcp-serve-local` first. |
-| Image descriptions fail | Ollama is not running, or you did not run `ollama signin`. To use a local model, set `OLLAMA_IMAGE_MODEL`. |
+| Image descriptions fail | `OPENROUTER_API_KEY` is not set, is not correct, or the account has no credits. To use a different model, set `OPENROUTER_IMAGE_MODEL` to an OpenRouter model that accepts images. |
 | Place lookups fail with "No files found" | Overture deletes old releases. Set `OVERTURE_RELEASE` to a current release from [the release list](https://docs.overturemaps.org/release/latest/). |
 | A place lookup is slow | This is expected. Overture is read from the cloud on each query. |
 
@@ -185,7 +185,7 @@ mechanism, see the runtime's [SESSION-STATE.md][session-state].
 | | `get_search_area` | Draws a circle of a given radius (km) around that place. **Map.** |
 | | `places_within_area` | Lists Overture places of one category inside the search area. **Map.** |
 | `naip-imagery` | `fetch_naip_image` | Gets NAIP aerial imagery for the search area from Microsoft Planetary Computer. The page shows the **image**. |
-| | `interpret_image` | Describes that image with a vision model served by Ollama. |
+| | `interpret_image` | Describes that image with a vision model on OpenRouter. |
 
 The DuckDB connection is locked down: SQL is read-only, and the tools cannot
 read or write local files. See the module docstrings in
