@@ -2,7 +2,7 @@
 
 No network: the STAC search and raster load only run against the real
 Planetary Computer, so `fetch_naip_image` is tested on its validation paths
-and pure helpers, and `interpret_image` against a monkeypatched Ollama call.
+and pure helpers, and `interpret_image` against a monkeypatched OpenRouter call.
 The state-wiring test is the one to keep green above all: it pins the
 cross-toolset contract — the area arrives from whatever published an
 `area` (duckdb-analyst's `get_search_area` today) and the image moves to
@@ -221,51 +221,75 @@ async def test_interpret_requires_image():
     assert is_error(result) and result["error"] == "invalid_image"
 
 
+def _openrouter_failing_with(status: int):
+    async def fake_completion(base_url, api_key, model, prompt, image_url):
+        request = httpx.Request("POST", "https://openrouter.ai/api/v1/chat/completions")
+        response = httpx.Response(status, request=request, text="nope")
+        raise httpx.HTTPStatusError("failed", request=request, response=response)
+
+    return fake_completion
+
+
 async def test_interpret_returns_model_answer(monkeypatch):
     seen: dict[str, Any] = {}
 
-    async def fake_generate(base_url, model, prompt, image_b64):
-        seen.update(base_url=base_url, model=model, prompt=prompt, image=image_b64)
-        return {"response": " A river crossing farmland. "}
+    async def fake_completion(base_url, api_key, model, prompt, image_url):
+        seen.update(api_key=api_key, model=model, prompt=prompt, image=image_url)
+        return {"choices": [{"message": {"content": " A river crossing farmland. "}}]}
 
-    monkeypatch.setattr(tools_module, "_ollama_generate", fake_generate)
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-test")
+    monkeypatch.setenv("OPENROUTER_IMAGE_MODEL", "some/vision-model")
+    monkeypatch.setattr(tools_module, "_chat_completion", fake_completion)
     encoded = base64.b64encode(b"jpegbytes").decode("ascii")
     result = await interpret_image.ainvoke(
-        {"image": {"base64": encoded}, "question": "What is this?"}
+        {
+            "image": {"base64": encoded, "media_type": "image/jpeg"},
+            "question": "What is this?",
+        }
     )
     assert not is_error(result)
     assert result["message"] == "A river crossing farmland."
-    assert seen["image"] == encoded and seen["prompt"] == "What is this?"
+    assert result["model"] == "some/vision-model"
+    assert seen["api_key"] == "sk-test" and seen["prompt"] == "What is this?"
+    assert seen["image"] == f"data:image/jpeg;base64,{encoded}"
 
 
-async def test_interpret_reports_dead_ollama(monkeypatch):
-    async def fake_generate(base_url, model, prompt, image_b64):
+async def test_interpret_requires_api_key(monkeypatch):
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    result = await interpret_image.ainvoke({"image": {"base64": "aGk="}})
+    assert is_error(result) and result["error"] == "openrouter_not_configured"
+
+
+async def test_interpret_reports_unreachable_endpoint(monkeypatch):
+    async def fake_completion(base_url, api_key, model, prompt, image_url):
         raise httpx.ConnectError("refused")
 
-    monkeypatch.setattr(tools_module, "_ollama_generate", fake_generate)
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-test")
+    monkeypatch.setattr(tools_module, "_chat_completion", fake_completion)
     result = await interpret_image.ainvoke({"image": {"base64": "aGk="}})
-    assert is_error(result) and result["error"] == "ollama_unavailable"
+    assert is_error(result) and result["error"] == "openrouter_unavailable"
 
 
-async def test_interpret_reports_missing_model(monkeypatch):
-    async def fake_generate(base_url, model, prompt, image_b64):
-        request = httpx.Request("POST", "http://localhost:11434/api/generate")
-        response = httpx.Response(404, request=request)
-        raise httpx.HTTPStatusError("not found", request=request, response=response)
+async def test_interpret_maps_http_errors(monkeypatch):
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-test")
+    for status, expected in [
+        (401, "openrouter_unauthorized"),
+        (402, "openrouter_no_credits"),
+        (404, "model_not_found"),
+        (500, "openrouter_error"),
+    ]:
+        monkeypatch.setattr(
+            tools_module, "_chat_completion", _openrouter_failing_with(status)
+        )
+        result = await interpret_image.ainvoke({"image": {"base64": "aGk="}})
+        assert is_error(result) and result["error"] == expected, status
 
-    monkeypatch.setattr(tools_module, "_ollama_generate", fake_generate)
+
+async def test_interpret_rejects_empty_answer(monkeypatch):
+    async def fake_completion(base_url, api_key, model, prompt, image_url):
+        return {"choices": [{"message": {"content": None}}]}
+
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-test")
+    monkeypatch.setattr(tools_module, "_chat_completion", fake_completion)
     result = await interpret_image.ainvoke({"image": {"base64": "aGk="}})
-    assert is_error(result) and result["error"] == "model_not_found"
-
-
-async def test_interpret_reports_missing_signin(monkeypatch):
-    # A -cloud model without `ollama signin` comes back as a 401 from the
-    # local daemon.
-    async def fake_generate(base_url, model, prompt, image_b64):
-        request = httpx.Request("POST", "http://localhost:11434/api/generate")
-        response = httpx.Response(401, request=request)
-        raise httpx.HTTPStatusError("unauthorized", request=request, response=response)
-
-    monkeypatch.setattr(tools_module, "_ollama_generate", fake_generate)
-    result = await interpret_image.ainvoke({"image": {"base64": "aGk="}})
-    assert is_error(result) and result["error"] == "ollama_unauthorized"
+    assert is_error(result) and result["error"] == "empty_response"
