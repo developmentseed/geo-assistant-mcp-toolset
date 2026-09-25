@@ -43,6 +43,11 @@ RUN if [ "${TOOLSET}" = "index" ]; then \
 
 FROM python:3.12-slim-bookworm
 ARG TOOLSET
+# rasterio's wheel (naip-imagery) links the system libexpat, which no slim
+# Python image ships. The full image has it but is 1.3 GB larger.
+RUN apt-get update \
+    && apt-get install --yes --no-install-recommends libexpat1 \
+    && rm -rf /var/lib/apt/lists/*
 ENV TOOLSET=${TOOLSET} HOST=0.0.0.0 PATH="/app/.venv/bin:$PATH"
 COPY --from=builder /app/.venv /app/.venv
 EXPOSE 8000
