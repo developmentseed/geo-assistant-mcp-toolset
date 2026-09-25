@@ -7,7 +7,6 @@ import "./styles.css";
 interface QueryResult {
   message?: string;
   rows?: Record<string, unknown>[];
-  row_count?: number;
 }
 
 const root = document.getElementById("root")!;
@@ -90,7 +89,7 @@ function render(data: QueryResult): void {
 
   const note = document.createElement("p");
   note.className = "view-note";
-  note.textContent = `${data.row_count ?? rows.length} row(s) × ${columns.length} column(s)`;
+  note.textContent = `${rows.length} row(s) × ${columns.length} column(s)`;
   view.append(note);
 }
 

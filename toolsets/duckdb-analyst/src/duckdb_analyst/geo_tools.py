@@ -334,7 +334,9 @@ async def places_within_area(
         north,
         category,
         json.dumps(mapping(geometry)),
-        limit,
+        # One past the limit, dropped below: it tells a full page from a
+        # truncated one, so "10 places" is never reported as the total.
+        limit + 1,
     ]
     try:
         _columns, rows = await execute_capped(
@@ -348,6 +350,8 @@ async def places_within_area(
             )
         logger.warning("places_within_area query failed: %s", error)
         return ToolError(error="query_failed", detail=str(error))
+    truncated = len(rows) > limit
+    rows = rows[:limit]
 
     collection: dict[str, Any] = {
         "type": "FeatureCollection",
@@ -376,8 +380,14 @@ async def places_within_area(
         suffix = f" - {website}" if website else ""
         lines.append(f"  • {properties['name']}{suffix}")
     listing = "\n".join(lines)
+    found = (
+        f"Showing the first {len(rows)} {category!r} places; more exist in the "
+        "area, so this is not the total"
+        if truncated
+        else f"Found {len(rows)} {category!r} place(s), the complete set in the area"
+    )
     return PlacesWithinAreaResult(
-        message=f"Found {len(rows)} {category!r} place(s):\n{listing}",
+        message=f"{found}:\n{listing}",
         places=collection,
     )
 
