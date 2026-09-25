@@ -86,8 +86,8 @@ ways. Some examples:
 ```
 
 1. You type a question in the chat page.
-2. The agent API sends it to a chat model (Mistral Small on OpenRouter by
-   default) with a list of tools.
+2. The agent API sends it to a chat model (Gemma 4 on OpenRouter by default)
+   with a list of tools.
 3. The model calls tools. Each toolset is a separate MCP server.
 4. The tools send back a short text for the model and structured data for the
    page. The page shows the data as a map, an image, a table or a chart.
