@@ -9,12 +9,7 @@ This repo is the [geo-assistant](https://github.com/developmentseed/geo-assistan
 workflow, rebuilt as [MCP](https://modelcontextprotocol.io) tools on the
 [mcp-toolsets](#built-on-mcp-toolsets) runtime.
 
-
-
-
-https://github.com/user-attachments/assets/7f3efd4b-b672-46c6-a367-30409799a37e
-
-
+<video src="https://github.com/user-attachments/assets/7f3efd4b-b672-46c6-a367-30409799a37e" width="720" controls></video>
 
 ## What it can do
 
