@@ -1,8 +1,8 @@
 """naip-imagery toolset.
 
 ``.env`` in the working directory is loaded at import (real environment
-wins) because that is where the localhost demo keeps its Ollama settings
-(``OLLAMA_BASE_URL``, ``OLLAMA_IMAGE_MODEL``) and log level. Logging is
+wins) because that is where the localhost demo keeps its OpenRouter settings
+(``OPENROUTER_API_KEY``, ``OPENROUTER_IMAGE_MODEL``) and log level. Logging is
 configured here for the same reason and with the same knobs as
 duckdb-analyst's ``__init__`` (see its docstring for the full rationale):
 ``LOG_LEVEL`` falling back to ``FASTMCP_LOG_LEVEL``, default ``INFO``, and

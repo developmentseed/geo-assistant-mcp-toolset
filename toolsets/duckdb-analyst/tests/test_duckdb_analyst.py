@@ -85,7 +85,6 @@ async def test_query_against_curated_view():
     )
     assert not is_error(result)
     assert 0 < len(result["rows"]) <= 5
-    assert result["row_count"] == len(result["rows"])
     assert "name" in result["rows"][0]
 
 
@@ -246,7 +245,54 @@ async def test_query_enforces_hard_row_cap_server_side():
         }
     )
     assert not is_error(result)
-    assert result["row_count"] <= 10_000
+    assert len(result["rows"]) == 10_000
+    assert "TRUNCATED" in result["message"]
+
+
+# ---------------------------------------------------------------------------
+# What the model reads. Every data key goes to session state, so the message
+# is the model's only view of a result until it calls inspect_state.
+# ---------------------------------------------------------------------------
+
+
+def test_list_sources_message_carries_every_column_with_its_type():
+    result = list_sources.invoke({})
+    for source in result["sources"]:
+        assert f"## {source['name']}" in result["message"]
+        for column in source.get("columns", []):
+            assert f"- {column['name']} {column['type']}" in result["message"]
+
+
+async def test_query_message_carries_schema_count_and_small_rows():
+    result = await query.ainvoke(
+        {"sql": "SELECT COUNT(*) AS n, 'x' AS label FROM range(7) AS t(k)"}
+    )
+    assert not is_error(result)
+    message = result["message"]
+    assert "1 row(s) × 2 column(s): n BIGINT, label VARCHAR." in message
+    assert "This is the complete result." in message
+    assert '[{"n": 7, "label": "x"}]' in message
+
+
+async def test_query_message_flags_a_result_cut_by_the_row_cap():
+    result = await query.ainvoke({"sql": "SELECT * FROM range(10) AS t(n)", "limit": 3})
+    assert not is_error(result)
+    assert len(result["rows"]) == 3
+    assert "TRUNCATED" in result["message"]
+
+
+async def test_query_message_does_not_flag_a_result_exactly_at_the_cap():
+    result = await query.ainvoke({"sql": "SELECT * FROM range(3) AS t(n)", "limit": 3})
+    assert not is_error(result)
+    assert "This is the complete result." in result["message"]
+
+
+async def test_query_message_leaves_large_rows_in_state():
+    result = await query.ainvoke({"sql": "SELECT * FROM range(1000) AS t(n)"})
+    assert not is_error(result)
+    assert len(result["rows"]) == 1000
+    assert "Rows:" not in result["message"]
+    assert "inspect_state" in result["message"]
 
 
 async def test_chart_fills_in_data_values_and_preserves_spec():

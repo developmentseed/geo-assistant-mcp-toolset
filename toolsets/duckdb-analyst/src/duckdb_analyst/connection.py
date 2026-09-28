@@ -781,8 +781,10 @@ def _build_sources(con: duckdb.DuckDBPyConnection) -> list[SourceInfo]:
 
 async def execute_capped(
     sql: str, params: list[Any] | None = None, timeout: float | None = None
-) -> tuple[list[str], list[tuple[Any, ...]]]:
+) -> tuple[list[ColumnInfo], list[tuple[Any, ...]]]:
     """Execute SQL on a fresh cursor, bounded by a wall-clock watchdog.
+
+    Returns the result's columns (name and DuckDB type) and its rows.
 
     The one way any tool runs SQL against :data:`CON`. Runs on a
     ``CON.cursor()`` (cheap; shares the locked-down in-memory database, safe
@@ -818,7 +820,10 @@ async def execute_capped(
     try:
         result = await asyncio.to_thread(cursor.execute, sql, params)
         rows = await asyncio.to_thread(result.fetchall)
-        columns = [description[0] for description in result.description]
+        columns = [
+            ColumnInfo(name=description[0], type=str(description[1]))
+            for description in result.description
+        ]
     except duckdb.Error as error:
         logger.debug(
             "query failed after %.1fs (%s: %s)",

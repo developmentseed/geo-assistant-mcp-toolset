@@ -18,18 +18,25 @@ raising.
 
 import json
 import logging
-from typing import Any, NotRequired
+from typing import Any, NamedTuple, NotRequired
 
 import duckdb
 from langchain_core.tools import tool
 
 from mcp_runtime.tool_result import ToolError, ToolResult
 
-from duckdb_analyst.connection import SOURCES, SourceInfo, execute_capped
+from duckdb_analyst.connection import ColumnInfo, SOURCES, SourceInfo, execute_capped
 from duckdb_analyst.geo_tools import GEO_TOOLS
 from duckdb_analyst.security import clamp_limit, validate_select_only
 
 logger = logging.getLogger(__name__)
+
+#: Above this many serialised characters, a result's rows stay out of the
+#: tool message and are reachable only through session state. Below it they
+#: go in the message too: every data key is captured into state however small,
+#: so without this a one-row aggregate (the usual answer to "how many …?")
+#: costs the model an extra ``inspect_state`` call to read.
+_INLINE_ROWS_CHARS = 2000
 
 
 class ListSourcesResult(ToolResult):
@@ -42,7 +49,6 @@ class QueryResult(ToolResult):
     """Rows from a validated, capped SELECT against the DuckDB connection."""
 
     rows: NotRequired[list[dict[str, Any]]]
-    row_count: NotRequired[int]
 
 
 class ChartResult(ToolResult):
@@ -85,14 +91,25 @@ def _wrap_with_limit(sql: str, limit: int) -> str:
     return f"SELECT * FROM (\n{sql}\n) AS _duckdb_analyst_query\nLIMIT {limit}"  # noqa: S608
 
 
-async def _run_query(
-    sql: str, limit: int
-) -> tuple[list[str], list[dict[str, Any]]] | ToolError:
+class _Outcome(NamedTuple):
+    """A capped SELECT's columns, rows, and whether the cap cut rows off."""
+
+    columns: list[ColumnInfo]
+    rows: list[dict[str, Any]]
+    truncated: bool
+
+
+async def _run_query(sql: str, limit: int) -> _Outcome | ToolError:
     """Validate, execute and fetch a capped SELECT, or return a ToolError.
 
     Execution (fresh cursor, watchdog timeout) is `connection.execute_capped`;
     this wrapper owns what is specific to caller-supplied SQL — the
     statement-shape validation, the row cap, and the ToolError mapping.
+
+    It fetches one row more than the cap and drops it, so the result can say
+    whether the cap cut rows off. Without that, "1000 rows" reads the same
+    whether the data has 1000 rows or a million, and a model reports the cap
+    as the count.
     """
     if detail := validate_select_only(sql):
         logger.info("rejected caller SQL (%s): %r", detail, sql)
@@ -101,7 +118,7 @@ async def _run_query(
     capped_limit = clamp_limit(limit)
     if capped_limit != limit:
         logger.debug("row limit clamped: %d -> %d", limit, capped_limit)
-    executable = _wrap_with_limit(sql, capped_limit)
+    executable = _wrap_with_limit(sql, capped_limit + 1)
     try:
         columns, rows = await execute_capped(executable)
     except duckdb.Error as error:
@@ -113,8 +130,65 @@ async def _run_query(
         logger.warning("caller SQL failed (%s): %s", kind, error)
         return ToolError(error=kind, detail=str(error))
 
-    records = [_json_safe(dict(zip(columns, row, strict=True))) for row in rows]
-    return columns, records
+    names = [column["name"] for column in columns]
+    records = [
+        _json_safe(dict(zip(names, row, strict=True))) for row in rows[:capped_limit]
+    ]
+    return _Outcome(columns, records, truncated=len(rows) > capped_limit)
+
+
+def _describe_result(outcome: _Outcome) -> str:
+    """The model's view of a query result: its schema, its size, and — when
+    small — its rows.
+
+    The rows are always captured into session state, so this text is all the
+    model has until it reads them back. It must therefore say what the
+    columns are, how many rows came back, and whether that is all of them,
+    so the model can plan its next step (read a value, or push a count or a
+    filter into new SQL) without a round-trip.
+    """
+    columns = ", ".join(
+        f"{column['name']} {column['type']}" for column in outcome.columns
+    )
+    lines = [
+        f"{len(outcome.rows)} row(s) × {len(outcome.columns)} column(s): {columns}."
+    ]
+    if outcome.truncated:
+        lines.append(
+            f"TRUNCATED: the row cap of {len(outcome.rows)} cut off more rows, so "
+            "this is not the total. Use COUNT(*) or GROUP BY in SQL for totals."
+        )
+    else:
+        lines.append("This is the complete result.")
+    rendered = json.dumps(outcome.rows, ensure_ascii=False)
+    if len(rendered) <= _INLINE_ROWS_CHARS:
+        lines.append(f"Rows: {rendered}")
+    else:
+        lines.append(
+            "The rows are too large to show here. Read specific values with "
+            "inspect_state (pattern= or path=), or aggregate with new SQL."
+        )
+    return "\n".join(lines)
+
+
+def _describe_source(source: SourceInfo) -> str:
+    """One source for `list_sources`'s message: what it is, how to query it,
+    and every column with its type — everything needed to write SQL
+    against it, since the structured `sources` key goes to session state.
+    """
+    lines = [
+        f"## {source['name']} ({source['kind']})",
+        source["description"],
+        f"Example: {' '.join(source['example_sql'].split())}",
+    ]
+    for column in source.get("columns", []):
+        line = f"- {column['name']} {column['type']}".rstrip()
+        if description := column.get("description"):
+            line += f" — {description}"
+        if channels := column.get("good_for"):
+            line += f" [chart: {', '.join(channels)}]"
+        lines.append(line)
+    return "\n".join(lines)
 
 
 @tool
@@ -129,9 +203,9 @@ def list_sources() -> ListSourcesResult:
     or a Zarr array store via `read_zarr`/`read_zarr_groups`/
     `read_zarr_metadata` (remote URLs only — a local path is rejected).
     """
-    names = ", ".join(source["name"] for source in SOURCES)
+    catalog = "\n\n".join(_describe_source(source) for source in SOURCES)
     return ListSourcesResult(
-        message=f"{len(SOURCES)} source(s) available: {names}.", sources=SOURCES
+        message=f"{len(SOURCES)} source(s) available.\n\n{catalog}", sources=SOURCES
     )
 
 
@@ -149,10 +223,7 @@ async def query(sql: str, limit: int = 1000) -> QueryResult | ToolError:
     outcome = await _run_query(sql, limit)
     if isinstance(outcome, dict):  # ToolError
         return outcome
-    _columns, rows = outcome
-    return QueryResult(
-        message=f"{len(rows)} row(s) returned.", rows=rows, row_count=len(rows)
-    )
+    return QueryResult(message=_describe_result(outcome), rows=outcome.rows)
 
 
 @tool
@@ -171,10 +242,10 @@ async def chart(
     outcome = await _run_query(sql, limit)
     if isinstance(outcome, dict):  # ToolError
         return outcome
-    _columns, rows = outcome
-    full_spec = {**spec, "data": {"values": rows}}
+    full_spec = {**spec, "data": {"values": outcome.rows}}
     return ChartResult(
-        message=f"Chart spec built with {len(rows)} row(s) of data.", spec=full_spec
+        message=f"Chart spec built. Its data: {_describe_result(outcome)}",
+        spec=full_spec,
     )
 
 

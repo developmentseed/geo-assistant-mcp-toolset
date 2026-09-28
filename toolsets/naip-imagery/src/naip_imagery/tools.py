@@ -3,7 +3,7 @@
 Two tools ported from geo-assistant's LangGraph agent: ``fetch_naip_image``
 searches Microsoft Planetary Computer's STAC API for NAIP aerial imagery
 over the session's area of interest and renders an RGB JPEG server-side;
-``interpret_image`` sends that JPEG to a local Ollama vision model and
+``interpret_image`` sends that JPEG to an OpenRouter vision model and
 returns its description. Both take their input as a ``NotAuthored``
 parameter, so the area arrives from ``duckdb-analyst``'s ``get_search_area``
 (or any tool publishing an area of interest) and the image moves between the
@@ -12,11 +12,11 @@ which matters here more than for geometries: a 512px JPEG is ~100KB of
 base64.
 
 The interpretation model is deliberately separate from the chat model: it is
-an Ollama endpoint (``OLLAMA_BASE_URL``, default localhost), so the localhost
-demo interprets imagery through its own Ollama daemon — by default a
-``-cloud`` model that executes on ollama.com (no GPU needed), or any locally
-pulled vision model via ``OLLAMA_IMAGE_MODEL`` — regardless of which
-provider drives the chat.
+an OpenRouter model (``OPENROUTER_IMAGE_MODEL``, authenticated with
+``OPENROUTER_API_KEY``), so imagery is interpreted the same way locally and
+when deployed — no GPU and no local daemon — regardless of which provider
+drives the chat. ``OPENROUTER_BASE_URL`` points it at any other
+OpenAI-compatible chat completions endpoint.
 
 Where the original aborted on rasters larger than 512x512, this port picks
 the load resolution from the area's size instead, so any area the upstream
@@ -75,17 +75,16 @@ _MAX_MOSAIC_ITEMS = 6
 #: Meters per degree of latitude (and of longitude at the equator).
 _M_PER_DEGREE = 111_320.0
 
-_OLLAMA_DEFAULT_URL = "http://localhost:11434"
+_OPENROUTER_DEFAULT_URL = "https://openrouter.ai/api/v1"
 
-#: A ``-cloud`` model executes on ollama.com through the local daemon
-#: (``ollama signin`` once, then ``ollama pull`` fetches a stub), so the
-#: demo needs no GPU — carried over from geo-assistant. Point
-#: ``OLLAMA_IMAGE_MODEL`` at any installed vision model to run locally.
-_OLLAMA_DEFAULT_MODEL = "gemma4:cloud"
+#: Gemma 4, the family geo-assistant ran as ``gemma4:cloud`` on Ollama.
+#: Set ``OPENROUTER_IMAGE_MODEL`` to any OpenRouter model that accepts
+#: image input.
+_OPENROUTER_DEFAULT_MODEL = "google/gemma-4-31b-it"
 
-#: Local vision inference on CPU can take minutes for a first (model-load)
-#: call; connecting to a dead endpoint should still fail fast.
-_OLLAMA_TIMEOUT = httpx.Timeout(300.0, connect=5.0)
+#: Hosted vision inference answers in seconds, but a busy upstream provider
+#: can queue; connecting to a dead endpoint should still fail fast.
+_OPENROUTER_TIMEOUT = httpx.Timeout(120.0, connect=5.0)
 
 
 class NaipImage(TypedDict):
@@ -272,6 +271,10 @@ async def fetch_naip_image(
     Acquisitions are mosaicked newest first until the area is covered, so
     the image can mix flight dates. The rendered image is published for
     `interpret_image` to describe.
+
+    The image is at most 512 px wide, so detail falls as the area grows: a
+    0.25 km buffer renders at the native 1 m/pixel, a 1 km buffer at about
+    4 m/pixel. Keep the area to what the question needs to see.
     """
     logger.debug("fetch_naip_image: %s/%s", start_date, end_date)
     try:
@@ -371,13 +374,13 @@ async def interpret_image(
     image: Annotated[dict, NotAuthored()],
     question: str = "Describe what you see in this aerial image.",
 ) -> InterpretImageResult | ToolError:
-    """Describe the previously fetched aerial image with an Ollama-served
-    vision model.
+    """Describe the previously fetched aerial image with a vision model on
+    OpenRouter.
 
     The image comes from session state (published by `fetch_naip_image`) and
-    goes to an Ollama endpoint — `OLLAMA_BASE_URL` (default localhost:11434)
-    running `OLLAMA_IMAGE_MODEL` — so it never enters this conversation's
-    context. Ask a specific `question` to steer the description.
+    goes to OpenRouter's `OPENROUTER_IMAGE_MODEL`, so it never enters this
+    conversation's context. Ask a specific `question` to steer the
+    description.
     """
     encoded = image.get("base64") if isinstance(image, dict) else None
     if not encoded:
@@ -385,39 +388,52 @@ async def interpret_image(
             error="invalid_image",
             detail="No image available — run fetch_naip_image first.",
         )
+    api_key = os.environ.get("OPENROUTER_API_KEY")
+    if not api_key:
+        return ToolError(
+            error="openrouter_not_configured",
+            detail="OPENROUTER_API_KEY is not set on the naip-imagery server.",
+        )
+    media_type = str(image.get("media_type") or "image/jpeg")
 
-    base_url = os.environ.get("OLLAMA_BASE_URL", _OLLAMA_DEFAULT_URL).rstrip("/")
-    model = os.environ.get("OLLAMA_IMAGE_MODEL", _OLLAMA_DEFAULT_MODEL)
+    base_url = os.environ.get("OPENROUTER_BASE_URL", _OPENROUTER_DEFAULT_URL)
+    base_url = base_url.rstrip("/")
+    model = os.environ.get("OPENROUTER_IMAGE_MODEL", _OPENROUTER_DEFAULT_MODEL)
     logger.debug("interpret_image: model=%r at %s", model, base_url)
 
     try:
-        payload = await _ollama_generate(base_url, model, question, encoded)
+        payload = await _chat_completion(
+            base_url, api_key, model, question, f"data:{media_type};base64,{encoded}"
+        )
     except httpx.ConnectError:
         return ToolError(
-            error="ollama_unavailable",
-            detail=f"No Ollama at {base_url} — start it (`ollama serve`) or "
-            "point OLLAMA_BASE_URL at one.",
+            error="openrouter_unavailable",
+            detail=f"Cannot connect to {base_url}.",
         )
     except httpx.HTTPStatusError as error:
-        if error.response.status_code == 404:
+        status = error.response.status_code
+        if status in (401, 403):
+            return ToolError(
+                error="openrouter_unauthorized",
+                detail="OpenRouter refused the request — check OPENROUTER_API_KEY.",
+            )
+        if status == 402:
+            return ToolError(
+                error="openrouter_no_credits",
+                detail="The OpenRouter account has no credits left.",
+            )
+        if status in (400, 404):
             return ToolError(
                 error="model_not_found",
-                detail=f"Ollama has no model {model!r} — `ollama pull {model}` "
-                "(`ollama signin` first for -cloud models), or set "
-                "OLLAMA_IMAGE_MODEL to an installed vision model.",
+                detail=f"OpenRouter cannot run {model!r} with an image — set "
+                "OPENROUTER_IMAGE_MODEL to a model that accepts image input. "
+                f"({error.response.text[:200]})",
             )
-        if error.response.status_code == 401:
-            return ToolError(
-                error="ollama_unauthorized",
-                detail=f"Ollama refused to run {model!r}: -cloud models "
-                "execute on ollama.com, which needs `ollama signin` once on "
-                "the machine running the daemon.",
-            )
-        return ToolError(error="ollama_error", detail=str(error))
+        return ToolError(error="openrouter_error", detail=str(error))
     except httpx.HTTPError as error:
-        return ToolError(error="ollama_error", detail=str(error))
+        return ToolError(error="openrouter_error", detail=str(error))
 
-    answer = str(payload.get("response", "")).strip()
+    answer = _message_text(payload)
     if not answer:
         return ToolError(
             error="empty_response",
@@ -427,18 +443,38 @@ async def interpret_image(
     return InterpretImageResult(message=answer, model=model)
 
 
-async def _ollama_generate(
-    base_url: str, model: str, prompt: str, image_b64: str
+def _message_text(payload: dict[str, Any]) -> str:
+    """The first choice's text from a chat completions response, or ''."""
+    try:
+        content = payload["choices"][0]["message"]["content"]
+    except (KeyError, IndexError, TypeError):
+        return ""
+    if isinstance(content, list):
+        content = "".join(
+            part.get("text", "") for part in content if isinstance(part, dict)
+        )
+    return str(content or "").strip()
+
+
+async def _chat_completion(
+    base_url: str, api_key: str, model: str, prompt: str, image_url: str
 ) -> dict[str, Any]:
-    """One non-streaming Ollama generate call with a single image attached."""
-    async with httpx.AsyncClient(timeout=_OLLAMA_TIMEOUT) as client:
+    """One non-streaming chat completions call with a single image attached."""
+    async with httpx.AsyncClient(timeout=_OPENROUTER_TIMEOUT) as client:
         response = await client.post(
-            f"{base_url}/api/generate",
+            f"{base_url}/chat/completions",
+            headers={"Authorization": f"Bearer {api_key}"},
             json={
                 "model": model,
-                "prompt": prompt,
-                "images": [image_b64],
-                "stream": False,
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "text", "text": prompt},
+                            {"type": "image_url", "image_url": {"url": image_url}},
+                        ],
+                    }
+                ],
             },
         )
         response.raise_for_status()

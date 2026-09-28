@@ -8,10 +8,16 @@ directly" — not strong enough to stop the model answering a data question
 training data when no tool call actually confirmed it. ``create_app`` documents
 ``build=`` for exactly this: a caller-supplied async factory that builds the
 agent its own way (see ``mcp_agent_api.app``'s docstring). This module is that
-factory, wired with ``GROUNDING_PROMPT`` composed the way
+factory, wired with ``GROUNDING_PROMPT`` and ``DATA_PROMPT`` composed the way
 :func:`mcp_agent.main.with_session_state` documents — the host's own
 instructions first, :data:`mcp_state.SESSION_STATE_PROMPT` last, since that
 fragment is what the state middleware depends on the model having read.
+
+A custom prompt also switches off what ``build_agent`` adds to its default
+one: the runtime's ``BASE_PROMPT``, and ``INTERRUPT_GATE_PROMPT`` when the
+``interrupt`` tool is wired in (it is by default). Both are added back here,
+since an agent that has the ``interrupt`` tool but no instructions for it
+asks its questions in plain text instead.
 
 It also serves the runtime's bundled web client at ``/``, configured with
 ``UI`` below rather than the ``MCP_AGENT_UI_*`` environment variables: the
@@ -22,10 +28,13 @@ Run with ``uv run uvicorn agent_app:app --port 8765`` in place of
 """
 
 from mcp_agent.main import (
+    BASE_PROMPT,
     SESSION_STATE_PROMPT,
     AgentSettings,
     Checkpointing,
+    InterruptGateSettings,
     build_agent,
+    with_interrupt_gate_prompt,
 )
 from mcp_agent_api.app import Built, Builder, create_app
 from mcp_agent_api.ui import UiConfig, mount_ui
@@ -43,18 +52,58 @@ GROUNDING_PROMPT = (
     "training data or a plausible-sounding guess."
 )
 
-SYSTEM_PROMPT = f"{GROUNDING_PROMPT}\n\n{SESSION_STATE_PROMPT}"
+#: How to get an answer out of data, which the grounding rule above does not
+#: say. Its first sentence is true only because duckdb-analyst's ``query``
+#: and ``chart`` messages carry the schema, the row count and a truncation
+#: flag; the rest follows from how session state works: every result is
+#: captured whatever its size, it cannot be queried with SQL, and a second
+#: query in one turn replaces the first one's rows beyond recovery.
+DATA_PROMPT = (
+    "Working with data: a query's tool message gives its columns and types, "
+    "its row count and whether the row cap truncated it, and the rows "
+    "themselves when they are small; otherwise the rows are in session state. "
+    "Answer counts, totals, rankings and filters with SQL (COUNT, SUM, GROUP "
+    "BY, ORDER BY ... LIMIT), not by counting or reading through rows. The row "
+    "count of a truncated result, or of a place list that says more exist, is "
+    "not the total. When a filter needs an attribute that another source "
+    "holds, such as a country's continent, join the sources rather than "
+    "approximate it with a coordinate box. Session state cannot be queried "
+    "with SQL, and an @state handle inside SQL text is a syntax error: to "
+    "filter or aggregate a result again, run a new query. Use inspect_state to read "
+    "specific values of a result you already have, not to aggregate it. A new "
+    "query replaces the previous query's rows, so read what you need from one "
+    "result before you run the next in the same turn, or answer both in one "
+    "SQL statement. Call list_sources before you write SQL against a source "
+    "whose columns you have not seen in this conversation. Chart a query over "
+    "a source, never values you type into the SQL yourself. A table, chart, "
+    "map or image that a tool result renders is already in front of the user, "
+    "so do not call another tool only to show the same data again."
+)
+
+SYSTEM_PROMPT = with_interrupt_gate_prompt(
+    f"{BASE_PROMPT}\n\n{GROUNDING_PROMPT}\n\n{DATA_PROMPT}\n\n{SESSION_STATE_PROMPT}",
+    InterruptGateSettings().mcp_agent_interrupt_gate,
+)
 
 #: The web client's header and opening screen. Each example is a button that
-#: sends the question, and each one exercises a different tool chain.
+#: sends the question. There is one per inhabited continent, each in a
+#: different language the chat model supports, and each one exercises a
+#: different tool chain: aerial imagery and the vision model, places on a
+#: map, an Overture aggregate, a count and a ranking, a join across two
+#: sources, and a plain comparison. NAIP covers the USA only, so the imagery
+#: example is the North American one.
 UI = UiConfig(
     title="geo-assistant",
     tagline="Places, maps, aerial imagery and spatial SQL",
     examples=(
-        "Find the Golden Gate Bridge and show me cafes within 1 km.",
-        "Get NAIP imagery around the Golden Gate Bridge and describe what you see.",
-        "Chart the 10 most populated places in France.",
-        "What data sources can you query?",
+        "Analiza la zona alrededor del Field Museum de Chicago. ¿Qué podemos ver allí?",
+        "Encontre o Mercado Municipal de São Paulo e mostre os restaurantes "
+        "a menos de 500 m.",
+        "Welche Arten von Orten gibt es am häufigsten rund um das "
+        "Brandenburger Tor? Zeig die Top 10 als Diagramm.",
+        "Afrika ina nchi ngapi, na ni nchi tano zipi zenye watu wengi zaidi?",
+        "アジアで人口が最も多い都市トップ10をグラフで見せてください。",
+        "Compare Australia and New Zealand: population, GDP and GDP per person.",
     ),
 )
 

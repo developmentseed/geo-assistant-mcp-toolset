@@ -12,10 +12,10 @@ dependencies = [
     # never see the extra. Upgrade by bumping this range and running `uv lock`.
     "mcp-toolsets-runtime[api]<0.11.0,>=0.10.2",
     "duckdb-analyst",
-    "langchain-mistralai<2.0.0,>=1.1.6",
     # Serves agent_app locally. Not part of the runtime's [api] extra.
     "uvicorn<0.53.0,>=0.52.3",
     "naip-imagery",
+    "langchain-openrouter>=0.2.9,<1.0.0",
 ]
 
 [dependency-groups]

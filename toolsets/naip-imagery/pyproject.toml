@@ -1,7 +1,7 @@
 [project]
 name = "naip-imagery"
 version = "0.1.0"
-description = "NAIP aerial imagery over the session's area of interest: STAC search on Microsoft Planetary Computer, an RGB JPEG rendered server-side, and an Ollama vision model to interpret it."
+description = "NAIP aerial imagery over the session's area of interest: STAC search on Microsoft Planetary Computer, an RGB JPEG rendered server-side, and an OpenRouter vision model to interpret it."
 requires-python = ">=3.12,<3.14"
 dependencies = [
     "httpx<1.0.0,>=0.28.1",
