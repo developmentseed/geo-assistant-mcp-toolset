@@ -10,7 +10,7 @@ dependencies = [
     # AG-UI HTTP API and bundled web client (mcp_agent_api), which
     # `agent_app.py` serves. The toolset images sync with `--package` and so
     # never see the extra. Upgrade by bumping this range and running `uv lock`.
-    "mcp-toolsets-runtime[api]<0.11.0,>=0.10.2",
+    "mcp-toolsets-runtime[api]<0.13.0,>=0.12.0",
     "duckdb-analyst",
     # Serves agent_app locally. Not part of the runtime's [api] extra.
     "uvicorn<0.53.0,>=0.52.3",
@@ -65,5 +65,5 @@ warn_redundant_casts = true
 check_untyped_defs = true
 
 [[tool.mypy.overrides]]
-module = ["langchain_mcp_adapters.*", "planetary_computer.*"]
+module = ["planetary_computer.*"]
 ignore_missing_imports = true

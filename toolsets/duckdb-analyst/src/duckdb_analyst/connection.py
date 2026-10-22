@@ -218,7 +218,7 @@ _THREADS = 2
 # to always filter on the `bbox` column. An unfiltered aggregate still times
 # out, which is the accepted MVP trade-off — a local extract (just another
 # CREATE VIEW here) remains the fix when this graduates from MVP.
-_OVERTURE_RELEASE = os.environ.get("OVERTURE_RELEASE", "2026-08-19.0")
+_OVERTURE_RELEASE = os.environ.get("OVERTURE_RELEASE", "2026-10-21.0")
 _OVERTURE_PLACES_PATH = (
     "s3://overturemaps-us-west-2/release/"
     f"{_OVERTURE_RELEASE}/theme=places/type=place/*.parquet"
@@ -546,12 +546,12 @@ _COLUMN_NOTES: dict[str, dict[str, ColumnInfo]] = {
             "type": "",
             "description": "Struct of names; `names.primary` is the display name.",
         },
-        "categories": {
-            "name": "categories",
+        "taxonomy": {
+            "name": "taxonomy",
             "type": "",
             "description": (
                 "Struct of Overture category slugs; filter on "
-                "`categories.primary` (e.g. 'restaurant', 'cafe', 'bar')."
+                "`taxonomy.primary` (e.g. 'restaurant', 'cafe', 'bar')."
             ),
         },
         "bbox": {
@@ -738,7 +738,7 @@ _EXAMPLE_SQL = {
         "natural_earth_places ORDER BY population_max DESC LIMIT 50"
     ),
     "overture_places": (
-        "SELECT names.primary AS name, categories.primary AS category, "
+        "SELECT names.primary AS name, taxonomy.primary AS category, "
         "ST_AsGeoJSON(geometry) AS geometry FROM overture_places "
         "WHERE bbox.xmin > -9.16 AND bbox.xmax < -9.13 "
         "AND bbox.ymin > 38.70 AND bbox.ymax < 38.72 LIMIT 10"
