@@ -136,7 +136,7 @@ async def get_place(
             id,
             names.primary AS name,
             confidence,
-            categories.primary AS category,
+            taxonomy.primary AS category,
             CAST(websites AS JSON) AS websites,
             CAST(socials AS JSON) AS socials,
             ST_AsGeoJSON(geometry) AS geometry,
@@ -286,7 +286,7 @@ async def places_within_area(
     (max 100) as a GeoJSON FeatureCollection plus a readable list, which the
     user sees on a map. `category` is exactly one slug: there is no wildcard.
     To count or compare categories in an area, `query` `overture_places`
-    and GROUP BY `categories.primary` instead. SQL cannot read session
+    and GROUP BY `taxonomy.primary` instead. SQL cannot read session
     state, so filter its `bbox` columns on a box of numbers around the
     place's coordinates (from `inspect_state` of the place).
     """
@@ -326,13 +326,13 @@ async def places_within_area(
         SELECT
             id,
             names.primary AS name,
-            categories.primary AS category,
+            taxonomy.primary AS category,
             CAST(websites AS JSON) AS websites,
             ST_AsGeoJSON(geometry) AS geometry
         FROM overture_places
         WHERE bbox.xmin > ? AND bbox.xmax < ?
           AND bbox.ymin > ? AND bbox.ymax < ?
-          AND categories.primary = ?
+          AND taxonomy.primary = ?
           AND ST_Intersects(geometry, ST_GeomFromGeoJSON(?))
         LIMIT ?
     """

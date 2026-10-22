@@ -6,7 +6,7 @@ contract) and the ToolResult return contract (annotations become the MCP
 output schema, so every tool in every toolset must convert cleanly).
 
 The sweep itself is a *consumer* concern: mcp-toolsets-runtime ships the gates
-it applies (``to_fastmcp``, ``load_credential_headers``, and ``build_server``
+it applies (``to_mcp_tool``, ``load_credential_headers``, and ``build_server``
 behind them) but not the walk over this repo's toolsets/, which it has no way
 to locate.
 """
@@ -17,7 +17,7 @@ from pathlib import Path
 import pytest
 from langchain_core.tools import BaseTool
 
-from mcp_runtime.fastmcp_output import to_fastmcp
+from mcp_runtime.bridge import to_mcp_tool
 from mcp_runtime.server import load_credential_headers
 
 TOOLSETS_DIR = Path(__file__).resolve().parents[1] / "toolsets"
@@ -43,5 +43,5 @@ def test_toolset_contract(toolset):
             f"{toolset}: tool {tool.name!r} needs a non-empty docstring"
         )
         # The same ToolResult gate build_server applies at startup.
-        converted = to_fastmcp(tool)
+        converted = to_mcp_tool(tool)
         assert converted.output_schema is not None
