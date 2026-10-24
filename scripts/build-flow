@@ -1,0 +1,9 @@
+#!/usr/bin/env sh
+# Build the session-flow page (flow_ui/) into flow_ui/dist/index.html, which
+# agent_app.py serves at /flow. Run from the repo root. Needs node.
+
+set -e
+
+cd flow_ui
+npm ci
+npm run build

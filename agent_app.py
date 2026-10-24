@@ -27,6 +27,11 @@ Run with ``uv run uvicorn agent_app:app --port 8765`` in place of
 ``uvicorn mcp_agent_api.app:app`` — see the README.
 """
 
+from pathlib import Path
+
+from fastapi import HTTPException
+from fastapi.responses import FileResponse
+
 from mcp_agent.main import (
     BASE_PROMPT,
     SESSION_STATE_PROMPT,
@@ -130,3 +135,16 @@ def _build(checkpointing: Checkpointing) -> Builder:
 _checkpointing = Checkpointing()
 app = create_app(build=_build(_checkpointing), ui=False)
 mount_ui(app, config=UI)
+
+
+#: The session-flow page, a canvas of the state a thread's turns read and wrote.
+#: Built from flow_ui/ by ./scripts/build-flow; it is a view of the same routes
+#: the chat page uses, so it lives beside the chat page rather than in the runtime.
+FLOW_PAGE = Path(__file__).parent / "flow_ui" / "dist" / "index.html"
+
+
+@app.get("/flow", include_in_schema=False)
+async def flow_page() -> FileResponse:
+    if not FLOW_PAGE.is_file():
+        raise HTTPException(503, "flow page is not built: run ./scripts/build-flow")
+    return FileResponse(FLOW_PAGE)

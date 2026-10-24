@@ -122,6 +122,7 @@ uv sync                        # install Python dependencies into .venv
 cp .example.env .env           # then set PROVIDER_API_KEY and OPENROUTER_API_KEY
                                # (the same OpenRouter key)
 ./scripts/build-views          # build the map, image, table and chart views
+./scripts/build-flow           # optional: build the session-flow page at /flow
 ```
 
 ### Start
@@ -136,6 +137,12 @@ uv run uvicorn agent_app:app --port 8765    # 2. the agent API and chat page, on
 
 Open <http://localhost:8765>. The start page shows example questions as
 buttons. Select one to start.
+
+To see how one conversation moves its data between tool calls, open
+<http://localhost:8765/flow?thread=ID>. Copy `ID` from the chat page's address
+bar, after `?thread=`. The page draws each state value, tool call and model
+input as a node, with lines that show what each call read. Select **open view**
+on a call to see the view it rendered.
 
 ### If something goes wrong
 
@@ -223,7 +230,8 @@ toolsets/
     tests/
   naip-imagery/               the same layout: fetch_naip_image, interpret_image, image view
 tests/test_contract.py        checks every toolset against the runtime's rules
-scripts/                      lint, test, format, build-views, remove-toolset
+scripts/                      lint, test, format, build-views, build-flow, remove-toolset
+flow_ui/                      the session-flow page, served at /flow
 Dockerfile, charts/, .github/ build and deploy each toolset (see Deployment)
 ```
 

@@ -24,6 +24,7 @@ public functions with this project's system prompt).
   hand-roll the layout. Add `--with-ui` for a toolset with a React view (see
   the runtime's CONSUMING.md §3).
 - Remove a toolset: `./scripts/remove-toolset <name>`.
+- Session-flow page (`/flow`, a React Flow canvas over the thread routes): `./scripts/build-flow` (needs node). It lives in `flow_ui/`, not the runtime.
 - Build toolset UIs: `./scripts/build-views` (needs node). Built view bundles
   live at `<package>/views/*.html`, are git-ignored, and must exist before
   `mcp-serve` or `build_server` aborts — the Dockerfile's node stage, the CI
